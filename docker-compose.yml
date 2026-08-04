@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   bot:
-    image: ghcr.io/youloveadmin/azure-bot-acp-adapter:latest
+    image: ghcr.io/cliffzhu/azure-bot-acp-adapter:latest
     pull_policy: always
     env_file:
       - .env

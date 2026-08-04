@@ -35,7 +35,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/youloveadmin/azure-bot-acp-adapter
+          images: ghcr.io/cliffzhu/azure-bot-acp-adapter
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
