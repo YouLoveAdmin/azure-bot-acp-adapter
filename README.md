@@ -146,12 +146,15 @@ WEBSOCKET_MODEL_NAME=
 npm run dev
 ```
 
-Or run the container:
+For the simplified container deployment, pull the published image from the upstream repository and start the service:
 
 ```powershell
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f
 ```
+
+The compose file uses the published image from GitHub Container Registry, so no local build step is required for normal deployments.
 
 ### 4. Check readiness
 
@@ -239,17 +242,14 @@ npm start
 
 ## Container Deployment
 
-Build the image:
+Pull and run the published image from the upstream repository:
 
 ```powershell
-docker build -t azure-bot-acp-adapter:local .
+docker compose pull
+docker compose up -d
 ```
 
-Run it with Compose:
-
-```powershell
-docker compose up -d --build
-```
+The compose file references the published image from GitHub Container Registry, so this is the recommended deployment path for most users. A local build is only needed if you want to test custom changes before publishing them.
 
 Azure Bot Service requires a publicly reachable HTTPS endpoint. Terminate TLS at Azure Container Apps ingress, a managed ingress controller, or a reverse proxy and forward traffic to port `3978`.
 

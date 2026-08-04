@@ -2,10 +2,8 @@ version: "3.9"
 
 services:
   bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: azure-bot-acp-adapter:local
+    image: ghcr.io/cliffzhu/azure-bot-acp-adapter:latest
+    pull_policy: always
     env_file:
       - .env
     extra_hosts:
