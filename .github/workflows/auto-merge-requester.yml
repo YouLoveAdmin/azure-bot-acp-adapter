@@ -1,0 +1,85 @@
+name: Auto-merge requester PRs
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  workflow_dispatch:
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    env:
+      AUTO_MERGE_REQUESTERS: ${{ vars.AUTO_MERGE_REQUESTERS }}
+      AUTO_MERGE_METHOD: ${{ vars.AUTO_MERGE_METHOD }}
+    steps:
+      - name: Enable auto-merge for allowed requester
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const allowedRequesters = (process.env.AUTO_MERGE_REQUESTERS ?? '')
+              .split(',')
+              .map((value) => value.trim().toLowerCase())
+              .filter(Boolean);
+
+            if (allowedRequesters.length === 0) {
+              core.setFailed('Repository variable AUTO_MERGE_REQUESTERS is not set. Add a comma-separated list of GitHub logins to allow auto-merge.');
+              return;
+            }
+
+            const author = context.payload.pull_request.user.login.toLowerCase();
+            if (!allowedRequesters.includes(author)) {
+              core.notice(`Skipping PR #${context.payload.pull_request.number}: ${author} is not in AUTO_MERGE_REQUESTERS.`);
+              return;
+            }
+
+            const configuredMethod = (process.env.AUTO_MERGE_METHOD ?? 'squash').trim().toUpperCase();
+            const validMethods = new Set(['MERGE', 'SQUASH', 'REBASE']);
+            if (!validMethods.has(configuredMethod)) {
+              core.setFailed(`AUTO_MERGE_METHOD must be one of merge, squash, or rebase. Received: ${process.env.AUTO_MERGE_METHOD}`);
+              return;
+            }
+
+            try {
+              await github.graphql(
+                `mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+                  enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: $mergeMethod }) {
+                    pullRequest {
+                      number
+                    }
+                  }
+                }`,
+                {
+                  pullRequestId: context.payload.pull_request.node_id,
+                  mergeMethod: configuredMethod
+                }
+              );
+
+              core.notice(`Enabled auto-merge for PR #${context.payload.pull_request.number} from ${author} using ${configuredMethod.toLowerCase()}.`);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+
+              if (message.includes('Auto merge is already enabled for this pull request')) {
+                core.notice(`Auto-merge is already enabled for PR #${context.payload.pull_request.number}.`);
+                return;
+              }
+
+              core.setFailed([
+                `Unable to enable auto-merge for PR #${context.payload.pull_request.number}.`,
+                'Confirm that repository auto-merge is enabled and that the GITHUB_TOKEN can write pull requests.',
+                `GitHub response: ${message}`
+              ].join(' '));
+            }
