@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test output
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+!.env.sample
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Azure / deployment artifacts
+.azure/
+*.publishsettings
+tmp-*.json
+*-runtime.json
+*-runtime-output.*
+az-*.json
+azure-*.json
+
+# Optional containers
+*.pid
+*.seed
+
+# Internal planning notes
+.plan
+
+# Development artifacts
+CHECKLIST.self-hosted.md
+scripts/*
+!scripts/deploy-container-app.ps1
+ask-acp-websocket.ps1
+DOCKER_TEST_RESULTS.md
+BUILD_AND_TEST.md
+.env.upstream.env
+.tmp-upstream-src/
+

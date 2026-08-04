@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.gitignore
+Dockerfile*
+docker-compose*.yml
+*.log
+.env*
+!.env.sample
+tmp-*.json
+*-runtime.json
+*-runtime-output.*
+az-*.json
+azure-*.json
+.tmp-upstream-src
