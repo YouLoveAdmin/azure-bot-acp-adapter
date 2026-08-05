@@ -102,3 +102,24 @@ test("ensureSession does not use the prepared-session pool for an existing conve
   assert.equal(sessionId, "fresh-session-for-existing-conversation");
   assert.deepEqual(calls, ["new"]);
 });
+
+test("createPreparedSessionInternal still returns a session when default config is unsupported", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const manager = {
+    sessionNew: async () => ({ sessionId: "prepared-session-without-config" }),
+    setConfigOption: async () => {
+      throw new Error("unsupported config");
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionLoad: async () => ({ sessionId: "unused" }),
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  const sessionId = await (coordinator as any).createPreparedSessionInternal();
+
+  assert.equal(sessionId, "prepared-session-without-config");
+});

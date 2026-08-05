@@ -154,6 +154,17 @@ export class WebSocketManager {
         this.pendingRequests.delete(id);
         const elapsedMs = Date.now() - timeoutStartedAt;
         const pendingCount = this.pendingRequests.size;
+
+        if (this.ws && this.isConnected) {
+          try {
+            this.isConnected = false;
+            this.ws.close();
+            this.ws = null;
+          } catch {
+            // Ignore cleanup errors and continue with the rejection.
+          }
+        }
+
         reject(new Error(`Request timeout for method "${method}" (id=${id}, elapsedMs=${elapsedMs}, timeoutMs=${this.options.messageTimeoutMs}, pendingAfterDrop=${pendingCount})`));
       }, this.options.messageTimeoutMs);
 

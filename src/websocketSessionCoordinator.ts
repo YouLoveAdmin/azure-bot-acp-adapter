@@ -187,7 +187,11 @@ export class WebSocketSessionCoordinator {
     }
 
     for (const option of configOptions) {
-      await this.configureSession(conversationKey, sessionId, option.configId, option.value);
+      try {
+        await this.configureSession(conversationKey, sessionId, option.configId, option.value);
+      } catch (error) {
+        console.warn(`Default session config ${option.configId} could not be applied for ${sessionId}; continuing without it: ${error}`);
+      }
     }
   }
 
