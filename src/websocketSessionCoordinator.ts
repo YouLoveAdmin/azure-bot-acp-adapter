@@ -427,34 +427,37 @@ export class WebSocketSessionCoordinator {
 
     // Create new session
     if (!session || session.sessionState === "new") {
-      const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
-      if (preparedSessionId) {
-        try {
-          const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
-          const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
-          sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
-          sessionRecord.sessionMode = "resumed";
-          sessionRecord.sessionState = "ready";
-          sessionRecord.initializedAt = Date.now();
-          this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
-          return sessionRecord.sessionId;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (this.isResumeUnsupportedError(message)) {
-            try {
-              const loadedSessionId = await this.manager?.sessionLoad(preparedSessionId, "/workspace");
-              const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
-              sessionRecord.sessionId = loadedSessionId?.sessionId ?? preparedSessionId;
-              sessionRecord.sessionMode = "loaded";
-              sessionRecord.sessionState = "ready";
-              sessionRecord.initializedAt = Date.now();
-              this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
-              return sessionRecord.sessionId;
-            } catch (loadError) {
-              console.warn(`Prepared-session resume failed; falling back to a fresh session: ${loadError}`);
+      const shouldUsePreparedSession = session === undefined;
+      if (shouldUsePreparedSession) {
+        const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
+        if (preparedSessionId) {
+          try {
+            const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
+            const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+            sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
+            sessionRecord.sessionMode = "resumed";
+            sessionRecord.sessionState = "ready";
+            sessionRecord.initializedAt = Date.now();
+            this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+            return sessionRecord.sessionId;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (this.isResumeUnsupportedError(message)) {
+              try {
+                const loadedSessionId = await this.manager?.sessionLoad(preparedSessionId, "/workspace");
+                const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+                sessionRecord.sessionId = loadedSessionId?.sessionId ?? preparedSessionId;
+                sessionRecord.sessionMode = "loaded";
+                sessionRecord.sessionState = "ready";
+                sessionRecord.initializedAt = Date.now();
+                this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+                return sessionRecord.sessionId;
+              } catch (loadError) {
+                console.warn(`Prepared-session resume failed; falling back to a fresh session: ${loadError}`);
+              }
+            } else {
+              console.warn(`Prepared-session resume failed; falling back to a fresh session: ${message}`);
             }
-          } else {
-            console.warn(`Prepared-session resume failed; falling back to a fresh session: ${message}`);
           }
         }
       }
@@ -543,6 +546,10 @@ export class WebSocketSessionCoordinator {
    */
   getSessionInfo(conversationKey: string): SessionRecord | undefined {
     return this.sessionStore.get(conversationKey);
+  }
+
+  async triggerPreparedSessionReplenishmentAfterSuccess(): Promise<void> {
+    await this.preparedSessionPool?.scheduleReplenishmentAfterSuccess();
   }
 
   getPreparedSessionPoolSnapshot() {
