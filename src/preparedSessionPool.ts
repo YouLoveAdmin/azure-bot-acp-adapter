@@ -80,6 +80,25 @@ export class PreparedSessionPool {
     return entry.sessionId;
   }
 
+  async scheduleReplenishmentAfterSuccess(): Promise<void> {
+    if (!this.options.enabled || !this.initialized) {
+      return;
+    }
+
+    if (this.inFlight.size > 0) {
+      return;
+    }
+
+    const task = this.replenishToTarget().catch((error) => {
+      this.counters.failed += 1;
+      this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+
+    this.inFlight.add(task);
+    await task;
+    this.inFlight.delete(task);
+  }
+
   async reset(): Promise<void> {
     this.pool.splice(0, this.pool.length);
     this.initialized = false;
@@ -99,20 +118,6 @@ export class PreparedSessionPool {
       inFlightCount: this.inFlight.size,
       counters: { ...this.counters }
     };
-  }
-
-  private async replenishInBackground(): Promise<void> {
-    if (!this.options.enabled || !this.initialized) {
-      return;
-    }
-
-    const task = this.replenishToTarget().catch((error) => {
-      this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
-    });
-
-    this.inFlight.add(task);
-    await task;
-    this.inFlight.delete(task);
   }
 
   private async replenishToTarget(): Promise<void> {

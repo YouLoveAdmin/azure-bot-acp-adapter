@@ -62,3 +62,43 @@ test("ensureSession creates a fresh session when prepared-session resume fails",
   assert.equal(sessionId, "fresh-session");
   assert.deepEqual(calls, ["resume", "load", "new"]);
 });
+
+test("ensureSession does not use the prepared-session pool for an existing conversation", async () => {
+  const store = new SessionStore();
+  const existing = store.getOrCreate("conv-3");
+  existing.sessionState = "new";
+  existing.sessionMode = undefined;
+  existing.sessionId = undefined;
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: string[] = [];
+
+  const manager = {
+    sessionResume: async () => {
+      calls.push("resume");
+      throw new Error("should not be called");
+    },
+    sessionLoad: async () => {
+      calls.push("load");
+      throw new Error("should not be called");
+    },
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "fresh-session-for-existing-conversation" };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+  (coordinator as any).preparedSessionPool.claimPreparedSession = async () => {
+    throw new Error("prepared pool should not be used for an existing conversation");
+  };
+
+  const sessionId = await coordinator.ensureSession("conv-3");
+
+  assert.equal(sessionId, "fresh-session-for-existing-conversation");
+  assert.deepEqual(calls, ["new"]);
+});

@@ -518,6 +518,12 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{ text
   // Send message to backend and get buffered response
   const response = await wsCoordinator.sendMessage(conversationKey, sessionId, input.userText);
 
+  // Defer pool replenishment until after the user-visible reply has been handled.
+  // This keeps the response path fast and avoids adding session creation latency to the request.
+  void wsCoordinator.triggerPreparedSessionReplenishmentAfterSuccess().catch((error) => {
+    console.warn("Prepared-session replenishment deferred after success failed:", error);
+  });
+
   // Format user-friendly response message
   let replyMessage = response.text;
   if (!replyMessage) {

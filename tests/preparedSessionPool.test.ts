@@ -24,4 +24,7 @@ test("PreparedSessionPool claims a prepared session and removes it from the pool
   const claimed = await pool.claimPreparedSession();
   assert.equal(claimed, "prepared-1");
   assert.equal(await pool.claimPreparedSession(), undefined);
+
+  await pool.scheduleReplenishmentAfterSuccess();
+  assert.equal(await pool.claimPreparedSession(), "prepared-2");
 });
