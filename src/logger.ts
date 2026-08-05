@@ -146,6 +146,16 @@ type OutgoingActivityLogParams = {
   error?: unknown;
 };
 
+type SessionLifecycleLogParams = {
+  event: string;
+  sessionId?: string;
+  conversationKey?: string;
+  poolSize?: number;
+  ageMs?: number;
+  remainingPoolSize?: number;
+  error?: unknown;
+};
+
 /**
  * Record Bot Framework outgoing activity events that do not flow through res.json.
  */
@@ -164,6 +174,23 @@ export function logOutgoingActivity(params: OutgoingActivityLogParams): void {
       type: "message",
       text: params.text
     },
+    error: params.error ?? null
+  });
+}
+
+/**
+ * Record prepared-session lifecycle events separately from request/response payloads.
+ */
+export function logSessionLifecycleEvent(params: SessionLifecycleLogParams): void {
+  writeLine({
+    ts: new Date().toISOString(),
+    direction: "session-lifecycle",
+    event: params.event,
+    sessionId: params.sessionId ?? null,
+    conversationKey: params.conversationKey ?? null,
+    poolSize: params.poolSize ?? null,
+    ageMs: params.ageMs ?? null,
+    remainingPoolSize: params.remainingPoolSize ?? null,
     error: params.error ?? null
   });
 }
