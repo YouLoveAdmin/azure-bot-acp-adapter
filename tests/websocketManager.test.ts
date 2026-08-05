@@ -1,5 +1,10 @@
-import { WebSocketManager } from "../src/websocketManager";
-import { JsonRpcRequest, JsonRpcResponse } from "../src/types/websocket";
+import test from "node:test";
+import assert from "node:assert/strict";
+import { JsonRpcRequest } from "../src/types/websocket";
+
+const describe = (name: string, fn: () => void) => {
+  test(name, fn);
+};
 
 describe("WebSocketManager", () => {
   describe("Message Framing", () => {
@@ -12,10 +17,10 @@ describe("WebSocketManager", () => {
       };
 
       const json = JSON.stringify(message) + "\n";
-      expect(json).toMatch(/^\{.*\}\n$/);
-      expect(json).toContain("jsonrpc");
-      expect(json).toContain("id");
-      expect(json).toContain("method");
+      assert.match(json, /^\{.*\}\n$/);
+      assert.ok(json.includes("jsonrpc"));
+      assert.ok(json.includes("id"));
+      assert.ok(json.includes("method"));
     });
 
     test("should parse newline-delimited JSON correctly", () => {
@@ -23,9 +28,9 @@ describe("WebSocketManager", () => {
       const line = JSON.stringify(message) + "\n";
 
       const parsed = JSON.parse(line.trim());
-      expect(parsed.jsonrpc).toBe("2.0");
-      expect(parsed.id).toBe("1");
-      expect(parsed.result).toEqual({ test: "data" });
+      assert.equal(parsed.jsonrpc, "2.0");
+      assert.equal(parsed.id, "1");
+      assert.deepEqual(parsed.result, { test: "data" });
     });
   });
 
@@ -35,7 +40,7 @@ describe("WebSocketManager", () => {
       for (let i = 1; i <= 5; i++) {
         ids.push(String(i));
       }
-      expect(ids).toEqual(["1", "2", "3", "4", "5"]);
+      assert.deepEqual(ids, ["1", "2", "3", "4", "5"]);
     });
   });
 
@@ -46,12 +51,10 @@ describe("WebSocketManager", () => {
       const credentials = `${username}:${token}`;
       const base64 = Buffer.from(credentials).toString("base64");
 
-      expect(base64).toBeDefined();
-      expect(base64.length).toBeGreaterThan(0);
+      assert.ok(base64.length > 0);
 
-      // Verify it decodes back correctly
       const decoded = Buffer.from(base64, "base64").toString("utf-8");
-      expect(decoded).toBe("token:test-token-123");
+      assert.equal(decoded, "token:test-token-123");
     });
 
     test("should create correct Authorization header", () => {
@@ -61,7 +64,7 @@ describe("WebSocketManager", () => {
       const base64 = Buffer.from(credentials).toString("base64");
       const header = `Basic ${base64}`;
 
-      expect(header).toMatch(/^Basic [A-Za-z0-9+/=]+$/);
+      assert.match(header, /^Basic [A-Za-z0-9+/=]+$/);
     });
   });
 
@@ -77,9 +80,9 @@ describe("WebSocketManager", () => {
         }
       };
 
-      expect(request.jsonrpc).toBe("2.0");
-      expect(request.method).toBe("initialize");
-      expect(request.params).toHaveProperty("protocolVersion", 1);
+      assert.equal(request.jsonrpc, "2.0");
+      assert.equal(request.method, "initialize");
+      assert.equal(request.params.protocolVersion, 1);
     });
 
     test("should properly format session/prompt request", () => {
@@ -93,9 +96,9 @@ describe("WebSocketManager", () => {
         }
       };
 
-      expect(request.method).toBe("session/prompt");
-      expect(request.params.prompt).toHaveLength(1);
-      expect(request.params.prompt[0].text).toBe("Hello, world!");
+      assert.equal(request.method, "session/prompt");
+      assert.equal(request.params.prompt.length, 1);
+      assert.equal(request.params.prompt[0].text, "Hello, world!");
     });
 
     test("should properly format error response", () => {
@@ -108,8 +111,8 @@ describe("WebSocketManager", () => {
         }
       };
 
-      expect(response.error.code).toBe(-32601);
-      expect(response.error.message).toContain("Method not found");
+      assert.equal(response.error.code, -32601);
+      assert.match(response.error.message, /Method not found/);
     });
   });
 
@@ -118,20 +121,15 @@ describe("WebSocketManager", () => {
       const timeoutMs = 100;
       const start = Date.now();
 
-      const promise = new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
+      const promise = new Promise((_, reject) => {
+        setTimeout(() => {
           reject(new Error(`Request timeout (${timeoutMs}ms)`));
         }, timeoutMs);
       });
 
-      try {
-        await promise;
-        fail("Should have timed out");
-      } catch (error: any) {
-        const elapsed = Date.now() - start;
-        expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 10); // Allow small variance
-        expect(error.message).toContain("timeout");
-      }
+      await assert.rejects(promise, /timeout/);
+      const elapsed = Date.now() - start;
+      assert.ok(elapsed >= timeoutMs - 10);
     });
   });
 
@@ -155,9 +153,9 @@ describe("WebSocketManager", () => {
         }
       }
 
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]).id).toBe("1");
-      expect(JSON.parse(lines[1]).id).toBe("2");
+      assert.equal(lines.length, 2);
+      assert.equal(JSON.parse(lines[0]).id, "1");
+      assert.equal(JSON.parse(lines[1]).id, "2");
     });
 
     test("should skip empty lines in buffer", () => {
@@ -174,9 +172,9 @@ describe("WebSocketManager", () => {
         }
       }
 
-      expect(lines).toHaveLength(2);
-      expect(lines[0]).toBe("line1");
-      expect(lines[1]).toBe("line2");
+      assert.equal(lines.length, 2);
+      assert.equal(lines[0], "line1");
+      assert.equal(lines[1], "line2");
     });
   });
 
@@ -184,9 +182,9 @@ describe("WebSocketManager", () => {
     test("should handle malformed JSON gracefully", () => {
       const malformed = '{"invalid": json}' + "\n";
 
-      expect(() => {
+      assert.throws(() => {
         JSON.parse(malformed.trim());
-      }).toThrow();
+      });
     });
 
     test("should handle JSON-RPC error response", () => {
@@ -200,8 +198,8 @@ describe("WebSocketManager", () => {
       };
 
       const error = errorResponse.error;
-      expect(error.code).toBe(-32601);
-      expect(error.message).toBe("Method not found");
+      assert.equal(error.code, -32601);
+      assert.equal(error.message, "Method not found");
     });
   });
 });

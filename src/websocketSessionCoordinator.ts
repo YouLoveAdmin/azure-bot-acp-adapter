@@ -260,7 +260,7 @@ export class WebSocketSessionCoordinator {
   }
 
   /**
-   * Resume an existing session
+   * Resume an existing session, falling back to load/create when the backend does not support resume.
    */
   async resumeSession(conversationKey: string, sessionId: string): Promise<string> {
     if (!this.manager || !this.isInitialized) {
@@ -277,9 +277,28 @@ export class WebSocketSessionCoordinator {
       console.log(`Session resumed: ${result.sessionId} for ${conversationKey}`);
       return result.sessionId;
     } catch (error) {
-      this.sessionStore.setError(conversationKey, `Failed to resume session: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.isResumeUnsupportedError(message)) {
+        try {
+          const result = await this.manager.sessionLoad(sessionId, "/workspace");
+          this.sessionStore.setSessionId(conversationKey, result.sessionId, "loaded");
+          this.sessionToConversationMap.set(result.sessionId, conversationKey);
+          console.warn(`Session resume unsupported; loaded existing session instead: ${result.sessionId}`);
+          return result.sessionId;
+        } catch (loadError) {
+          const loadMessage = loadError instanceof Error ? loadError.message : String(loadError);
+          this.sessionStore.setError(conversationKey, `Failed to resume or load session: ${loadMessage}`);
+          throw new Error(`Failed to resume or load session: ${loadMessage}`);
+        }
+      }
+
+      this.sessionStore.setError(conversationKey, `Failed to resume session: ${message}`);
       throw error;
     }
+  }
+
+  private isResumeUnsupportedError(message: string): boolean {
+    return /method not found|session\/resume|not supported|unsupported/i.test(message);
   }
 
   /**
@@ -410,14 +429,34 @@ export class WebSocketSessionCoordinator {
     if (!session || session.sessionState === "new") {
       const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
       if (preparedSessionId) {
-        const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
-        const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
-        sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
-        sessionRecord.sessionMode = "resumed";
-        sessionRecord.sessionState = "ready";
-        sessionRecord.initializedAt = Date.now();
-        this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
-        return sessionRecord.sessionId;
+        try {
+          const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
+          const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+          sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
+          sessionRecord.sessionMode = "resumed";
+          sessionRecord.sessionState = "ready";
+          sessionRecord.initializedAt = Date.now();
+          this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+          return sessionRecord.sessionId;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (this.isResumeUnsupportedError(message)) {
+            try {
+              const loadedSessionId = await this.manager?.sessionLoad(preparedSessionId, "/workspace");
+              const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+              sessionRecord.sessionId = loadedSessionId?.sessionId ?? preparedSessionId;
+              sessionRecord.sessionMode = "loaded";
+              sessionRecord.sessionState = "ready";
+              sessionRecord.initializedAt = Date.now();
+              this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+              return sessionRecord.sessionId;
+            } catch (loadError) {
+              console.warn(`Prepared-session resume failed; falling back to a fresh session: ${loadError}`);
+            }
+          } else {
+            console.warn(`Prepared-session resume failed; falling back to a fresh session: ${message}`);
+          }
+        }
       }
 
       return this.createSession(conversationKey);
