@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { WebSocketManager } from "../src/websocketManager";
 import { JsonRpcRequest } from "../src/types/websocket";
 
 const describe = (name: string, fn: () => void) => {
@@ -130,6 +131,29 @@ describe("WebSocketManager", () => {
       await assert.rejects(promise, /timeout/);
       const elapsed = Date.now() - start;
       assert.ok(elapsed >= timeoutMs - 10);
+    });
+
+    test("should close the websocket connection on request timeout", async () => {
+      const manager = new WebSocketManager({
+        url: "ws://example.test",
+        username: "token",
+        authToken: "secret",
+        messageTimeoutMs: 20,
+        reconnect: false
+      });
+
+      let closed = false;
+      (manager as any).ws = {
+        send: () => undefined,
+        close: () => {
+          closed = true;
+        }
+      };
+      (manager as any).isConnected = true;
+
+      await assert.rejects(manager.request("initialize"), /Request timeout/);
+      assert.equal(closed, true);
+      assert.equal((manager as any).isConnected, false);
     });
   });
 
