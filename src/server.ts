@@ -698,7 +698,8 @@ app.get(config.healthEndpointPath, (_req, res) => {
   res.status(200).json({
     status: "ok",
     sessionsInMemory: sessionStore.size(),
-    wsReady: wsCoordinator?.isReady() ?? false
+    wsReady: wsCoordinator?.isReady() ?? false,
+    preparedSessionPool: wsCoordinator?.getPreparedSessionPoolSnapshot() ?? null
   });
 });
 

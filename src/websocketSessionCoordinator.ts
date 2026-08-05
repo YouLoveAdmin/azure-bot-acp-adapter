@@ -3,6 +3,8 @@ import { config } from "./config";
 import { SessionStore, SessionRecord } from "./sessionStore";
 import { StreamingResponseHandler } from "./streamingResponseHandler";
 import { PermissionRequestManager } from "./permissionRequestManager";
+import { PreparedSessionPool } from "./preparedSessionPool";
+import { logSessionLifecycleEvent } from "./logger";
 import {
   InitializeResult,
   SessionNewResult,
@@ -34,6 +36,7 @@ export class WebSocketSessionCoordinator {
   private supportedAuthMethods: string[] = [];
   private responseHandlers: Map<string, StreamingResponseHandler> = new Map();
   private sessionToConversationMap: Map<string, string> = new Map(); // sessionId -> conversationKey
+  private preparedSessionPool?: PreparedSessionPool;
   private updateCallback?: (conversationKey: string, update: SessionUpdate) => void;
   private permissionCallback?: (conversationKey: string, request: PermissionRequest) => Promise<"approved" | "cancelled" | "denied">;
   private legacyMissingSessionIdCount: number = 0;
@@ -42,6 +45,28 @@ export class WebSocketSessionCoordinator {
   constructor(sessionStore: SessionStore) {
     this.sessionStore = sessionStore;
     this.permissionManager = new PermissionRequestManager();
+    this.preparedSessionPool = new PreparedSessionPool({
+      enabled: config.preparedSessionEnabled,
+      poolSize: config.preparedSessionPoolSize,
+      maxAgeMs: config.preparedSessionMaxAgeMs,
+      backgroundRetryMs: config.preparedSessionBackgroundRetryMs,
+      createPreparedSession: async () => {
+        const preparedSessionId = await this.createPreparedSessionInternal();
+        return preparedSessionId;
+      },
+      onEvent: (event, details) => {
+        const payload = details ? details : {};
+        logSessionLifecycleEvent({
+          event,
+          sessionId: typeof payload.sessionId === "string" ? payload.sessionId : undefined,
+          conversationKey: typeof payload.conversationKey === "string" ? payload.conversationKey : undefined,
+          poolSize: typeof payload.poolSize === "number" ? payload.poolSize : undefined,
+          ageMs: typeof payload.ageMs === "number" ? payload.ageMs : undefined,
+          remainingPoolSize: typeof payload.remainingPoolSize === "number" ? payload.remainingPoolSize : undefined,
+          error: payload.error
+        });
+      }
+    });
   }
 
   /**
@@ -135,6 +160,7 @@ export class WebSocketSessionCoordinator {
       const result = await this.manager.initialize(this.protocolVersion);
       this.handleInitializeResult(result);
       this.isInitialized = true;
+      await this.preparedSessionPool?.initialize();
       console.log("WebSocket initialization successful");
     } catch (error) {
       console.error("WebSocket initialization failed:", error);
@@ -163,6 +189,16 @@ export class WebSocketSessionCoordinator {
     for (const option of configOptions) {
       await this.configureSession(conversationKey, sessionId, option.configId, option.value);
     }
+  }
+
+  private async createPreparedSessionInternal(): Promise<string> {
+    if (!this.manager || !this.isInitialized) {
+      throw new Error("WebSocket not initialized");
+    }
+
+    const result = await this.manager.sessionNew("/workspace");
+    await this.applyDefaultSessionConfig("prepared-session", result.sessionId);
+    return result.sessionId;
   }
 
   /**
@@ -372,6 +408,18 @@ export class WebSocketSessionCoordinator {
 
     // Create new session
     if (!session || session.sessionState === "new") {
+      const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
+      if (preparedSessionId) {
+        const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
+        const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+        sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
+        sessionRecord.sessionMode = "resumed";
+        sessionRecord.sessionState = "ready";
+        sessionRecord.initializedAt = Date.now();
+        this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+        return sessionRecord.sessionId;
+      }
+
       return this.createSession(conversationKey);
     }
 
@@ -429,6 +477,7 @@ export class WebSocketSessionCoordinator {
     const result = await this.manager.initialize(this.protocolVersion);
     this.handleInitializeResult(result);
     this.isInitialized = true;
+    await this.preparedSessionPool?.onReconnect();
     console.log("WebSocket re-initialization handshake successful");
   }
 
@@ -455,5 +504,9 @@ export class WebSocketSessionCoordinator {
    */
   getSessionInfo(conversationKey: string): SessionRecord | undefined {
     return this.sessionStore.get(conversationKey);
+  }
+
+  getPreparedSessionPoolSnapshot() {
+    return this.preparedSessionPool?.getSnapshot();
   }
 }
