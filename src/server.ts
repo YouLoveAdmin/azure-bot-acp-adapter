@@ -13,6 +13,9 @@ import { logOutgoingActivity, payloadLogger } from "./logger";
 import { SessionStore } from "./sessionStore";
 import { WebSocketManager } from "./websocketManager";
 import { WebSocketSessionCoordinator } from "./websocketSessionCoordinator";
+import { applySymlinkMappings } from "./symlinkBootstrap";
+
+applySymlinkMappings(config.symlinkMappings);
 
 const app = express();
 app.use(express.json());

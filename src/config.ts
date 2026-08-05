@@ -31,6 +31,7 @@ type AppConfig = {
   outgoingActivityLogEnabled: boolean;
   streamingResponsesEnabled: boolean;
   verboseSessionUpdates: boolean;
+  symlinkMappings: string;
 };
 
 function mustGet(name: string): string {
@@ -139,5 +140,6 @@ export const config: AppConfig = {
   jwtClockSkewSeconds: asNumber("JWT_CLOCK_SKEW_SECONDS", 300),
   outgoingActivityLogEnabled: asBoolean("OUTGOING_ACTIVITY_LOG_ENABLED", true),
   streamingResponsesEnabled: asBoolean("STREAMING_RESPONSES_ENABLED", false),
-  verboseSessionUpdates: asBoolean("VERBOSE_SESSION_UPDATES", true)
+  verboseSessionUpdates: asBoolean("VERBOSE_SESSION_UPDATES", true),
+  symlinkMappings: process.env.ACP_SYMLINK_MAPPINGS ?? ""
 };
