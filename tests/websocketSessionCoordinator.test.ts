@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketSessionCoordinator } from "../src/websocketSessionCoordinator";
 import { SessionStore } from "../src/sessionStore";
+import { config } from "../src/config";
 
 test("resumeSessionWithFallback uses session/load when session/resume is unsupported", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
@@ -122,4 +123,78 @@ test("createPreparedSessionInternal still returns a session when default config 
   const sessionId = await (coordinator as any).createPreparedSessionInternal();
 
   assert.equal(sessionId, "prepared-session-without-config");
+});
+
+test("createPreparedSessionInternal sends warmup prompt when configured", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const calls: string[] = [];
+  const originalPrompt = config.warmupSessionInitialPrompt;
+  (config as any).warmupSessionInitialPrompt = "warmup prompt text";
+
+  const manager = {
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "prepared-with-warmup" };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async (sessionId: string, prompt: string) => {
+      calls.push(`prompt:${sessionId}:${prompt}`);
+      return { stopReason: "completion" as const };
+    },
+    sessionDestroy: async () => {
+      calls.push("destroy");
+      return undefined;
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  try {
+    const sessionId = await (coordinator as any).createPreparedSessionInternal();
+    assert.equal(sessionId, "prepared-with-warmup");
+    assert.deepEqual(calls, ["new", "prompt:prepared-with-warmup:warmup prompt text"]);
+  } finally {
+    (config as any).warmupSessionInitialPrompt = originalPrompt;
+  }
+});
+
+test("createPreparedSessionInternal destroys session when warmup prompt fails", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const calls: string[] = [];
+  const originalPrompt = config.warmupSessionInitialPrompt;
+  (config as any).warmupSessionInitialPrompt = "warmup prompt text";
+
+  const manager = {
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "prepared-fail-warmup" };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => {
+      calls.push("prompt");
+      return { stopReason: "error" as const, exitCode: 23 };
+    },
+    sessionDestroy: async (sessionId: string) => {
+      calls.push(`destroy:${sessionId}`);
+      return undefined;
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  try {
+    await assert.rejects(
+      async () => (coordinator as any).createPreparedSessionInternal(),
+      /Prepared session warmup prompt failed \(exitCode=23\)/
+    );
+    assert.deepEqual(calls, ["new", "prompt", "destroy:prepared-fail-warmup"]);
+  } finally {
+    (config as any).warmupSessionInitialPrompt = originalPrompt;
+  }
 });

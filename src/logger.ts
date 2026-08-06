@@ -26,6 +26,39 @@ const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES ?? 5 * 1024 * 1024); // 5
 let stream: fs.WriteStream | null = null;
 let currentSize = 0;
 
+function toLogSafeValue(value: unknown): unknown {
+  if (Buffer.isBuffer(value)) {
+    return {
+      type: "Buffer",
+      length: value.length
+    };
+  }
+
+  return value;
+}
+
+function safeStringify(entry: unknown): string {
+  const seen = new WeakSet<object>();
+
+  return JSON.stringify(entry, (_key, value) => {
+    const normalized = toLogSafeValue(value);
+
+    if (typeof normalized === "bigint") {
+      return normalized.toString();
+    }
+
+    if (normalized && typeof normalized === "object") {
+      if (seen.has(normalized)) {
+        return "[Circular]";
+      }
+
+      seen.add(normalized);
+    }
+
+    return normalized;
+  });
+}
+
 function ensureDir(): void {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -76,7 +109,15 @@ function writeLine(entry: object): void {
     initSize();
   }
 
-  const line = JSON.stringify(entry) + "\n";
+  let line: string;
+  try {
+    line = safeStringify(entry) + "\n";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[logger] Failed to serialize log entry:", message);
+    return;
+  }
+
   const lineLen = Buffer.byteLength(line, "utf8");
 
   if (currentSize + lineLen > LOG_MAX_BYTES) {
@@ -103,6 +144,8 @@ export function payloadLogger(req: Request, res: Response, next: NextFunction): 
   const ts     = new Date().toISOString();
   const method = req.method;
   const urlPath = req.path;
+  let capturedResponseBody: unknown = null;
+  let outgoingLogged = false;
 
   // Log incoming
   writeLine({
@@ -118,19 +161,37 @@ export function payloadLogger(req: Request, res: Response, next: NextFunction): 
     body: req.body ?? null
   });
 
-  // Intercept outgoing res.json so we can capture the payload
+  // Capture outgoing bodies from the common response paths.
   const origJson = res.json.bind(res) as (body: unknown) => Response;
   res.json = (body: unknown): Response => {
-    writeLine({
-      ts        : new Date().toISOString(),
-      direction : "outgoing",
-      method,
-      path      : urlPath,
-      status    : res.statusCode,
-      body
-    });
+    capturedResponseBody = body;
     return origJson(body);
   };
+
+  const origSend = res.send.bind(res) as (body?: unknown) => Response;
+  res.send = (body?: unknown): Response => {
+    capturedResponseBody = body ?? capturedResponseBody;
+    return origSend(body);
+  };
+
+  const logOutgoing = () => {
+    if (outgoingLogged) {
+      return;
+    }
+
+    outgoingLogged = true;
+    writeLine({
+      ts: new Date().toISOString(),
+      direction: "outgoing",
+      method,
+      path: urlPath,
+      status: res.statusCode,
+      body: capturedResponseBody
+    });
+  };
+
+  res.on("finish", logOutgoing);
+  res.on("close", logOutgoing);
 
   next();
 }
