@@ -36,6 +36,7 @@ export class WebSocketSessionCoordinator {
   private supportedAuthMethods: string[] = [];
   private responseHandlers: Map<string, StreamingResponseHandler> = new Map();
   private sessionToConversationMap: Map<string, string> = new Map(); // sessionId -> conversationKey
+  private preparedSessionIds: Set<string> = new Set();
   private preparedSessionPool?: PreparedSessionPool;
   private updateCallback?: (conversationKey: string, update: SessionUpdate) => void;
   private permissionCallback?: (conversationKey: string, request: PermissionRequest) => Promise<"approved" | "cancelled" | "denied">;
@@ -56,6 +57,10 @@ export class WebSocketSessionCoordinator {
       },
       onEvent: (event, details) => {
         const payload = details ? details : {};
+        if (event === "expired" && typeof payload.sessionId === "string") {
+          this.preparedSessionIds.delete(payload.sessionId);
+        }
+
         logSessionLifecycleEvent({
           event,
           sessionId: typeof payload.sessionId === "string" ? payload.sessionId : undefined,
@@ -90,6 +95,10 @@ export class WebSocketSessionCoordinator {
             this.updateCallback(conversationKey, update);
           }
         } else {
+          if (this.preparedSessionIds.has(update.sessionId)) {
+            return;
+          }
+
           console.warn(`No conversation mapping found for sessionId=${update.sessionId}`);
         }
 
@@ -201,8 +210,39 @@ export class WebSocketSessionCoordinator {
     }
 
     const result = await this.manager.sessionNew("/workspace");
-    await this.applyDefaultSessionConfig("prepared-session", result.sessionId);
-    return result.sessionId;
+    this.preparedSessionIds.add(result.sessionId);
+
+    try {
+      await this.applyDefaultSessionConfig("prepared-session", result.sessionId);
+      await this.warmupPreparedSession(result.sessionId);
+      return result.sessionId;
+    } catch (error) {
+      try {
+        await this.manager.sessionDestroy(result.sessionId);
+      } catch (destroyError) {
+        console.warn(`Failed to destroy prepared session after warmup/config failure (${result.sessionId}): ${destroyError}`);
+      }
+
+      this.preparedSessionIds.delete(result.sessionId);
+      throw error;
+    }
+  }
+
+  private async warmupPreparedSession(sessionId: string): Promise<void> {
+    const prompt = config.warmupSessionInitialPrompt;
+    if (!prompt) {
+      return;
+    }
+
+    if (!this.manager) {
+      throw new Error("WebSocket manager unavailable for warmup prompt");
+    }
+
+    const result = await this.manager.sessionPrompt(sessionId, prompt);
+    if (result.stopReason === "error") {
+      const exitCode = typeof result.exitCode === "number" ? result.exitCode : "unknown";
+      throw new Error(`Prepared session warmup prompt failed (exitCode=${exitCode})`);
+    }
   }
 
   /**
@@ -435,6 +475,8 @@ export class WebSocketSessionCoordinator {
       if (shouldUsePreparedSession) {
         const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
         if (preparedSessionId) {
+          this.preparedSessionIds.delete(preparedSessionId);
+
           try {
             const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
             const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
