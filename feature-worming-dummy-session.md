@@ -206,7 +206,7 @@ If creation fails:
 
 # Session Rotation
 
-Prepared sessions should expire after a configurable age.
+Prepared sessions may expire after a configurable age.
 
 Example:
 
@@ -216,7 +216,9 @@ ACP_PREPARED_SESSION_MAX_AGE_MS=900000
 
 Default:
 
-15 minutes.
+0 (never expires in warm-pool logic).
+
+If set to a positive value, sessions older than that age are evicted from the warm pool and replenished.
 
 Expired sessions should be replaced proactively.
 
@@ -247,7 +249,7 @@ ACP_PREPARED_SESSION_ENABLED=true
 
 ACP_PREPARED_SESSION_POOL_SIZE=1
 
-ACP_PREPARED_SESSION_MAX_AGE_MS=900000
+ACP_PREPARED_SESSION_MAX_AGE_MS=0
 
 ACP_PREPARED_SESSION_BACKGROUND_RETRY_MS=10000
 ```

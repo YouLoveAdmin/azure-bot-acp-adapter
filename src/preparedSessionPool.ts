@@ -62,20 +62,31 @@ export class PreparedSessionPool {
     }
 
     const now = Date.now();
-    const activeIndex = this.pool.findIndex((entry) => now - entry.createdAt <= this.options.maxAgeMs);
-    if (activeIndex < 0) {
+    this.evictExpiredSessions(now);
+
+    if (this.pool.length === 0) {
       this.counters.fallback += 1;
       this.options.onEvent("fallback", { poolSize: this.pool.length, maxAgeMs: this.options.maxAgeMs });
+      this.startReplenishmentTask();
       return undefined;
     }
 
-    const [entry] = this.pool.splice(activeIndex, 1);
+    const entry = this.pool.shift();
+    if (!entry) {
+      this.counters.fallback += 1;
+      this.options.onEvent("fallback", { poolSize: this.pool.length, maxAgeMs: this.options.maxAgeMs });
+      this.startReplenishmentTask();
+      return undefined;
+    }
+
     this.counters.claimed += 1;
     this.options.onEvent("claimed", {
       sessionId: entry.sessionId,
       ageMs: Date.now() - entry.createdAt,
       remainingPoolSize: this.pool.length
     });
+
+    this.startReplenishmentTask();
 
     return entry.sessionId;
   }
@@ -85,18 +96,10 @@ export class PreparedSessionPool {
       return;
     }
 
-    if (this.inFlight.size > 0) {
-      return;
+    const task = this.startReplenishmentTask();
+    if (task) {
+      await task;
     }
-
-    const task = this.replenishToTarget().catch((error) => {
-      this.counters.failed += 1;
-      this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
-    });
-
-    this.inFlight.add(task);
-    await task;
-    this.inFlight.delete(task);
   }
 
   async reset(): Promise<void> {
@@ -125,6 +128,8 @@ export class PreparedSessionPool {
       return;
     }
 
+    this.evictExpiredSessions(Date.now());
+
     while (this.pool.length < this.options.poolSize) {
       try {
         const sessionId = await this.options.createPreparedSession();
@@ -140,5 +145,53 @@ export class PreparedSessionPool {
         await new Promise((resolve) => setTimeout(resolve, this.options.backgroundRetryMs));
       }
     }
+  }
+
+  private evictExpiredSessions(now: number): void {
+    if (this.options.maxAgeMs <= 0) {
+      return;
+    }
+
+    const active: PreparedSessionEntry[] = [];
+    for (const entry of this.pool) {
+      const ageMs = now - entry.createdAt;
+      if (ageMs <= this.options.maxAgeMs) {
+        active.push(entry);
+        continue;
+      }
+
+      this.counters.expired += 1;
+      this.options.onEvent("expired", {
+        sessionId: entry.sessionId,
+        ageMs,
+        maxAgeMs: this.options.maxAgeMs
+      });
+    }
+
+    if (active.length !== this.pool.length) {
+      this.pool.splice(0, this.pool.length, ...active);
+    }
+  }
+
+  private startReplenishmentTask(): Promise<void> | undefined {
+    if (!this.options.enabled || !this.initialized) {
+      return undefined;
+    }
+
+    if (this.inFlight.size > 0) {
+      return undefined;
+    }
+
+    const task = this.replenishToTarget().catch((error) => {
+      this.counters.failed += 1;
+      this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+
+    this.inFlight.add(task);
+    void task.finally(() => {
+      this.inFlight.delete(task);
+    });
+
+    return task;
   }
 }

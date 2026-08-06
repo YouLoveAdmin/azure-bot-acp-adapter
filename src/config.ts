@@ -125,7 +125,7 @@ export const config: AppConfig = {
   websocketSessionTtlMs: asNumber("WEBSOCKET_SESSION_TTL_MS", 14_400_000),
   preparedSessionEnabled: asBoolean("ACP_PREPARED_SESSION_ENABLED", true),
   preparedSessionPoolSize: asNumber("ACP_PREPARED_SESSION_POOL_SIZE", 1),
-  preparedSessionMaxAgeMs: asNumber("ACP_PREPARED_SESSION_MAX_AGE_MS", 900_000),
+  preparedSessionMaxAgeMs: asNumber("ACP_PREPARED_SESSION_MAX_AGE_MS", 0),
   preparedSessionBackgroundRetryMs: asNumber("ACP_PREPARED_SESSION_BACKGROUND_RETRY_MS", 10_000),
   healthEndpointPath: process.env.HEALTH_ENDPOINT_PATH ?? "/healthz",
   jwtOnlyAuthEnabled,
