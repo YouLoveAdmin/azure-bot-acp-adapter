@@ -32,18 +32,18 @@ test("resumeSessionWithFallback uses session/load when session/resume is unsuppo
   assert.deepEqual(calls, ["resume", "load:existing-session"]);
 });
 
-test("ensureSession creates a fresh session when prepared-session resume fails", async () => {
+test("ensureSession binds the claimed prepared session directly without calling resume or load", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
   const calls: string[] = [];
 
   const manager = {
     sessionResume: async () => {
       calls.push("resume");
-      throw new Error('[-32601] "Method not found": session/resume');
+      throw new Error("should not be called");
     },
     sessionLoad: async () => {
       calls.push("load");
-      throw new Error("Method not found");
+      throw new Error("should not be called");
     },
     sessionNew: async () => {
       calls.push("new");
@@ -60,8 +60,40 @@ test("ensureSession creates a fresh session when prepared-session resume fails",
 
   const sessionId = await coordinator.ensureSession("conv-2");
 
+  assert.equal(sessionId, "prepared-session");
+  assert.deepEqual(calls, []);
+});
+
+test("ensureSession falls back to a fresh session when the prepared pool has nothing to claim", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const calls: string[] = [];
+
+  const manager = {
+    sessionResume: async () => {
+      calls.push("resume");
+      throw new Error("should not be called");
+    },
+    sessionLoad: async () => {
+      calls.push("load");
+      throw new Error("should not be called");
+    },
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "fresh-session" };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+  (coordinator as any).preparedSessionPool.claimPreparedSession = async () => undefined;
+
+  const sessionId = await coordinator.ensureSession("conv-empty-pool");
+
   assert.equal(sessionId, "fresh-session");
-  assert.deepEqual(calls, ["resume", "load", "new"]);
+  assert.deepEqual(calls, ["new"]);
 });
 
 test("ensureSession does not use the prepared-session pool for an existing conversation", async () => {
