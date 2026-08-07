@@ -516,80 +516,28 @@ export class WebSocketSessionCoordinator {
         const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
         if (preparedSessionId) {
           this.preparedSessionIds.delete(preparedSessionId);
+
+          // The prepared session was created (session/new) and warmed up (session/prompt)
+          // on this same live backend connection, so it is already active/loaded on the
+          // backend. No resume/load call is needed or valid here - calling session/resume
+          // on an already-active session returns an "already loaded" error from the backend.
+          // Bind the conversation directly to the prepared session id so the claimed
+          // session keeps the exact same id and becomes the live session for this
+          // conversation.
+          const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
+          sessionRecord.sessionId = preparedSessionId;
+          sessionRecord.sessionMode = "prepared";
+          sessionRecord.sessionState = "ready";
+          sessionRecord.initializedAt = Date.now();
+          this.sessionToConversationMap.set(preparedSessionId, conversationKey);
           logSessionLifecycleEvent({
-            event: "prepared-session-resume-attempt",
+            event: "prepared-session-bound",
             sessionId: preparedSessionId,
             sourceSessionId: preparedSessionId,
             conversationKey,
-            sessionMode: "resumed"
+            sessionMode: "prepared"
           });
-
-          try {
-            const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
-            const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
-            sessionRecord.sessionId = resumedSessionId?.sessionId ?? preparedSessionId;
-            sessionRecord.sessionMode = "resumed";
-            sessionRecord.sessionState = "ready";
-            sessionRecord.initializedAt = Date.now();
-            this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
-            logSessionLifecycleEvent({
-              event: "prepared-session-bound",
-              sessionId: sessionRecord.sessionId,
-              sourceSessionId: preparedSessionId,
-              conversationKey,
-              sessionMode: "resumed"
-            });
-            return sessionRecord.sessionId;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (this.isResumeUnsupportedError(message)) {
-              logSessionLifecycleEvent({
-                event: "prepared-session-load-attempt",
-                sessionId: preparedSessionId,
-                sourceSessionId: preparedSessionId,
-                conversationKey,
-                sessionMode: "loaded",
-                error: message
-              });
-              try {
-                const loadedSessionId = await this.manager?.sessionLoad(preparedSessionId, "/workspace");
-                const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
-                sessionRecord.sessionId = loadedSessionId?.sessionId ?? preparedSessionId;
-                sessionRecord.sessionMode = "loaded";
-                sessionRecord.sessionState = "ready";
-                sessionRecord.initializedAt = Date.now();
-                this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
-                logSessionLifecycleEvent({
-                  event: "prepared-session-bound",
-                  sessionId: sessionRecord.sessionId,
-                  sourceSessionId: preparedSessionId,
-                  conversationKey,
-                  sessionMode: "loaded"
-                });
-                return sessionRecord.sessionId;
-              } catch (loadError) {
-                logSessionLifecycleEvent({
-                  event: "prepared-session-fallback-fresh",
-                  sessionId: preparedSessionId,
-                  sourceSessionId: preparedSessionId,
-                  conversationKey,
-                  sessionMode: "new",
-                  error: loadError instanceof Error ? loadError.message : String(loadError)
-                });
-                console.warn(`Prepared-session resume failed; falling back to a fresh session: ${loadError}`);
-              }
-            } else {
-              logSessionLifecycleEvent({
-                event: "prepared-session-fallback-fresh",
-                sessionId: preparedSessionId,
-                sourceSessionId: preparedSessionId,
-                conversationKey,
-                sessionMode: "new",
-                error: message
-              });
-              console.warn(`Prepared-session resume failed; falling back to a fresh session: ${message}`);
-            }
-          }
+          return preparedSessionId;
         }
       }
 

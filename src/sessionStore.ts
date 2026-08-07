@@ -12,7 +12,7 @@ export type SessionRecord = {
   sessionState: "new" | "initializing" | "ready" | "error";
   
   // Session mode: "new" (created this conversation), "resumed" (previous session), "loaded" (from persistent store)
-  sessionMode?: "new" | "resumed" | "loaded";
+  sessionMode?: "new" | "resumed" | "loaded" | "prepared";
   
   // Backend agent capabilities (populated after initialize response)
   capabilities?: {
