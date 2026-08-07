@@ -640,7 +640,9 @@ async function ensureWebSocketReady(): Promise<void> {
           username: config.websocketUser,
           authToken: config.websocketAuthToken,
           connectTimeoutMs: config.websocketConnectTimeoutMs,
-          messageTimeoutMs: config.websocketMessageTimeoutMs
+          messageTimeoutMs: config.websocketMessageTimeoutMs,
+          reconnectDelayMs: config.websocketReconnectBackoffMs,
+          reconnectMaxAttempts: config.websocketReconnectMaxAttempts
         });
 
         wsCoordinator = new WebSocketSessionCoordinator(sessionStore);
