@@ -172,5 +172,5 @@ export interface WebSocketManagerOptions {
 export interface PendingRequest {
   resolve: (value: any) => void;
   reject: (error: any) => void;
-  timeout: NodeJS.Timeout;
+  timeout?: NodeJS.Timeout;
 }

@@ -155,6 +155,41 @@ describe("WebSocketManager", () => {
       assert.equal(closed, true);
       assert.equal((manager as any).isConnected, false);
     });
+
+    test("should not create a timeout when messageTimeoutMs is zero", async () => {
+      const manager = new WebSocketManager({
+        url: "ws://example.test",
+        username: "token",
+        authToken: "secret",
+        messageTimeoutMs: 0,
+        reconnect: false
+      });
+
+      let sent = false;
+      (manager as any).ws = {
+        send: () => {
+          sent = true;
+        },
+        close: () => undefined
+      };
+      (manager as any).isConnected = true;
+
+      const requestPromise = manager.request("initialize");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const pending = (manager as any).pendingRequests.get("1");
+      assert.equal(sent, true);
+      assert.ok(pending);
+      assert.equal(pending.timeout, undefined);
+
+      (manager as any).handleMessage({
+        jsonrpc: "2.0",
+        id: "1",
+        result: { protocolVersion: 1 }
+      });
+
+      await assert.doesNotReject(requestPromise);
+    });
   });
 
   describe("Message Parsing", () => {
