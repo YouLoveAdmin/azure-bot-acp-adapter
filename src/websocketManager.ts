@@ -149,24 +149,25 @@ export class WebSocketManager {
 
     return new Promise((resolve, reject) => {
       const timeoutStartedAt = Date.now();
-      // Set up timeout
-      const timeout = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        const elapsedMs = Date.now() - timeoutStartedAt;
-        const pendingCount = this.pendingRequests.size;
+      const timeout = this.options.messageTimeoutMs && this.options.messageTimeoutMs > 0
+        ? setTimeout(() => {
+          this.pendingRequests.delete(id);
+          const elapsedMs = Date.now() - timeoutStartedAt;
+          const pendingCount = this.pendingRequests.size;
 
-        if (this.ws && this.isConnected) {
-          try {
-            this.isConnected = false;
-            this.ws.close();
-            this.ws = null;
-          } catch {
-            // Ignore cleanup errors and continue with the rejection.
+          if (this.ws && this.isConnected) {
+            try {
+              this.isConnected = false;
+              this.ws.close();
+              this.ws = null;
+            } catch {
+              // Ignore cleanup errors and continue with the rejection.
+            }
           }
-        }
 
-        reject(new Error(`Request timeout for method "${method}" (id=${id}, elapsedMs=${elapsedMs}, timeoutMs=${this.options.messageTimeoutMs}, pendingAfterDrop=${pendingCount})`));
-      }, this.options.messageTimeoutMs);
+          reject(new Error(`Request timeout for method "${method}" (id=${id}, elapsedMs=${elapsedMs}, timeoutMs=${this.options.messageTimeoutMs}, pendingAfterDrop=${pendingCount})`));
+        }, this.options.messageTimeoutMs)
+        : undefined;
 
       // Store pending request
       this.pendingRequests.set(id, {
@@ -180,7 +181,9 @@ export class WebSocketManager {
         this.sendMessage(message);
       } catch (error) {
         this.pendingRequests.delete(id);
-        clearTimeout(timeout);
+        if (timeout) {
+          clearTimeout(timeout);
+        }
         reject(error);
       }
     });
