@@ -76,10 +76,13 @@ export class WebSocketSessionCoordinator {
         logSessionLifecycleEvent({
           event,
           sessionId: typeof payload.sessionId === "string" ? payload.sessionId : undefined,
+          sourceSessionId: typeof payload.sourceSessionId === "string" ? payload.sourceSessionId : undefined,
           conversationKey: typeof payload.conversationKey === "string" ? payload.conversationKey : undefined,
           poolSize: typeof payload.poolSize === "number" ? payload.poolSize : undefined,
           ageMs: typeof payload.ageMs === "number" ? payload.ageMs : undefined,
           remainingPoolSize: typeof payload.remainingPoolSize === "number" ? payload.remainingPoolSize : undefined,
+          sessionMode: typeof payload.sessionMode === "string" ? payload.sessionMode : undefined,
+          stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
           error: payload.error
         });
       }
@@ -269,6 +272,7 @@ export class WebSocketSessionCoordinator {
       logSessionLifecycleEvent({
         event: "warmup-failed",
         sessionId,
+        stopReason: result.stopReason,
         error: `stopReason=error; exitCode=${exitCode}`
       });
       throw new Error(`Prepared session warmup prompt failed (exitCode=${exitCode})`);
@@ -277,7 +281,7 @@ export class WebSocketSessionCoordinator {
     logSessionLifecycleEvent({
       event: "warmup-completed",
       sessionId,
-      error: `stopReason=${result.stopReason}`
+      stopReason: result.stopReason
     });
   }
 
@@ -512,6 +516,13 @@ export class WebSocketSessionCoordinator {
         const preparedSessionId = await this.preparedSessionPool?.claimPreparedSession();
         if (preparedSessionId) {
           this.preparedSessionIds.delete(preparedSessionId);
+          logSessionLifecycleEvent({
+            event: "prepared-session-resume-attempt",
+            sessionId: preparedSessionId,
+            sourceSessionId: preparedSessionId,
+            conversationKey,
+            sessionMode: "resumed"
+          });
 
           try {
             const resumedSessionId = await this.manager?.sessionResume(preparedSessionId);
@@ -521,10 +532,25 @@ export class WebSocketSessionCoordinator {
             sessionRecord.sessionState = "ready";
             sessionRecord.initializedAt = Date.now();
             this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+            logSessionLifecycleEvent({
+              event: "prepared-session-bound",
+              sessionId: sessionRecord.sessionId,
+              sourceSessionId: preparedSessionId,
+              conversationKey,
+              sessionMode: "resumed"
+            });
             return sessionRecord.sessionId;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             if (this.isResumeUnsupportedError(message)) {
+              logSessionLifecycleEvent({
+                event: "prepared-session-load-attempt",
+                sessionId: preparedSessionId,
+                sourceSessionId: preparedSessionId,
+                conversationKey,
+                sessionMode: "loaded",
+                error: message
+              });
               try {
                 const loadedSessionId = await this.manager?.sessionLoad(preparedSessionId, "/workspace");
                 const sessionRecord = this.sessionStore.getOrCreate(conversationKey);
@@ -533,11 +559,34 @@ export class WebSocketSessionCoordinator {
                 sessionRecord.sessionState = "ready";
                 sessionRecord.initializedAt = Date.now();
                 this.sessionToConversationMap.set(sessionRecord.sessionId, conversationKey);
+                logSessionLifecycleEvent({
+                  event: "prepared-session-bound",
+                  sessionId: sessionRecord.sessionId,
+                  sourceSessionId: preparedSessionId,
+                  conversationKey,
+                  sessionMode: "loaded"
+                });
                 return sessionRecord.sessionId;
               } catch (loadError) {
+                logSessionLifecycleEvent({
+                  event: "prepared-session-fallback-fresh",
+                  sessionId: preparedSessionId,
+                  sourceSessionId: preparedSessionId,
+                  conversationKey,
+                  sessionMode: "new",
+                  error: loadError instanceof Error ? loadError.message : String(loadError)
+                });
                 console.warn(`Prepared-session resume failed; falling back to a fresh session: ${loadError}`);
               }
             } else {
+              logSessionLifecycleEvent({
+                event: "prepared-session-fallback-fresh",
+                sessionId: preparedSessionId,
+                sourceSessionId: preparedSessionId,
+                conversationKey,
+                sessionMode: "new",
+                error: message
+              });
               console.warn(`Prepared-session resume failed; falling back to a fresh session: ${message}`);
             }
           }

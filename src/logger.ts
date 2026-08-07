@@ -210,10 +210,13 @@ type OutgoingActivityLogParams = {
 type SessionLifecycleLogParams = {
   event: string;
   sessionId?: string;
+  sourceSessionId?: string;
   conversationKey?: string;
   poolSize?: number;
   ageMs?: number;
   remainingPoolSize?: number;
+  sessionMode?: string;
+  stopReason?: string;
   error?: unknown;
 };
 
@@ -248,10 +251,13 @@ export function logSessionLifecycleEvent(params: SessionLifecycleLogParams): voi
     direction: "session-lifecycle",
     event: params.event,
     sessionId: params.sessionId ?? null,
+    sourceSessionId: params.sourceSessionId ?? null,
     conversationKey: params.conversationKey ?? null,
     poolSize: params.poolSize ?? null,
     ageMs: params.ageMs ?? null,
     remainingPoolSize: params.remainingPoolSize ?? null,
+    sessionMode: params.sessionMode ?? null,
+    stopReason: params.stopReason ?? null,
     error: params.error ?? null
   });
 }
