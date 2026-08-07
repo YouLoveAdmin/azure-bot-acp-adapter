@@ -258,11 +258,27 @@ export class WebSocketSessionCoordinator {
       throw new Error("WebSocket manager unavailable for warmup prompt");
     }
 
+    logSessionLifecycleEvent({
+      event: "warmup-started",
+      sessionId
+    });
+
     const result = await this.manager.sessionPrompt(sessionId, prompt);
     if (result.stopReason === "error") {
       const exitCode = typeof result.exitCode === "number" ? result.exitCode : "unknown";
+      logSessionLifecycleEvent({
+        event: "warmup-failed",
+        sessionId,
+        error: `stopReason=error; exitCode=${exitCode}`
+      });
       throw new Error(`Prepared session warmup prompt failed (exitCode=${exitCode})`);
     }
+
+    logSessionLifecycleEvent({
+      event: "warmup-completed",
+      sessionId,
+      error: `stopReason=${result.stopReason}`
+    });
   }
 
   /**

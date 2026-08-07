@@ -19,6 +19,7 @@ export class StreamingResponseHandler {
   handleUpdate(update: SessionUpdate): void {
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
+      case "agent_message":
         this.handleMessageChunk(update);
         break;
 
@@ -58,12 +59,52 @@ export class StreamingResponseHandler {
     }
   }
 
+  private extractTextFragments(value: unknown): string[] {
+    if (typeof value === "string") {
+      return value.trim().length > 0 ? [value] : [];
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => this.extractTextFragments(item));
+    }
+
+    if (!value || typeof value !== "object") {
+      return [];
+    }
+
+    const record = value as Record<string, unknown>;
+    const fragments: string[] = [];
+
+    if (typeof record.text === "string" && record.text.trim().length > 0) {
+      fragments.push(record.text);
+    }
+
+    if (record.content !== undefined) {
+      fragments.push(...this.extractTextFragments(record.content));
+    }
+
+    if (record.json !== undefined) {
+      fragments.push(...this.extractTextFragments(record.json));
+    }
+
+    if (record.messages !== undefined) {
+      fragments.push(...this.extractTextFragments(record.messages));
+    }
+
+    if (record.parts !== undefined) {
+      fragments.push(...this.extractTextFragments(record.parts));
+    }
+
+    return fragments;
+  }
+
   /**
    * Handle agent message chunk (streaming text)
    */
   private handleMessageChunk(update: SessionUpdate): void {
-    if (update.content?.type === "text" && update.content.text) {
-      this.textBuffer.push(update.content.text);
+    const fragments = this.extractTextFragments(update.content);
+    for (const fragment of fragments) {
+      this.textBuffer.push(fragment);
     }
   }
 
@@ -71,6 +112,11 @@ export class StreamingResponseHandler {
    * Handle agent message completion marker
    */
   private handleMessageCompletion(update: SessionUpdate): void {
+    const fragments = this.extractTextFragments(update.content);
+    for (const fragment of fragments) {
+      this.textBuffer.push(fragment);
+    }
+
     // Mark streaming as complete for this batch
     console.log("Agent message completed");
   }
