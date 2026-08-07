@@ -21,6 +21,14 @@ const LOG_FILE     = path.join(LOG_DIR, "bot.log");
 const LOG_OLDER    = path.join(LOG_DIR, "bot.log.older");
 const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES ?? 5 * 1024 * 1024); // 5 MB
 
+/**
+ * Directory used for log files. Other modules (e.g. prepared-session
+ * persistence) reuse this so their state lives alongside the logs.
+ */
+export function getLogDirectory(): string {
+  return LOG_DIR;
+}
+
 // ─── Internal state ───────────────────────────────────────────────────────────
 
 let stream: fs.WriteStream | null = null;
