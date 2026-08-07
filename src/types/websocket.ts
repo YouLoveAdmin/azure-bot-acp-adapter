@@ -114,6 +114,7 @@ export interface SessionUpdate {
   sessionId?: string;
   sessionUpdate:
     | "agent_message_chunk"
+    | "agent_message"
     | "agent_message_completion"
     | "tool_call"
     | "session_state_change"

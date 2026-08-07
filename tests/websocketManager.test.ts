@@ -118,6 +118,17 @@ describe("WebSocketManager", () => {
   });
 
   describe("Timeout Handling", () => {
+    test("should normalize non-positive connect timeout to default", () => {
+      const manager = new WebSocketManager({
+        url: "ws://example.test",
+        username: "token",
+        authToken: "secret",
+        connectTimeoutMs: 0
+      });
+
+      assert.equal((manager as any).options.connectTimeoutMs, 10000);
+    });
+
     test("should generate timeout error after specified duration", async () => {
       const timeoutMs = 100;
       const start = Date.now();

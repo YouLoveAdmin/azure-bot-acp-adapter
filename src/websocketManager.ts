@@ -41,7 +41,7 @@ export class WebSocketManager {
   private reconnectAttempts: number = 0;
 
   constructor(options: WebSocketManagerOptions) {
-    this.options = {
+    const mergedOptions: WebSocketManagerOptions = {
       connectTimeoutMs: 10000,
       messageTimeoutMs: 30000,
       reconnect: true,
@@ -49,6 +49,13 @@ export class WebSocketManager {
       reconnectMaxDelayMs: 30000,
       ...options
     };
+
+    if (!mergedOptions.connectTimeoutMs || mergedOptions.connectTimeoutMs <= 0) {
+      console.warn(`Invalid connectTimeoutMs (${mergedOptions.connectTimeoutMs}); using default 10000ms`);
+      mergedOptions.connectTimeoutMs = 10000;
+    }
+
+    this.options = mergedOptions;
   }
 
   /**
