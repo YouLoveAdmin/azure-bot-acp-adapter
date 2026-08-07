@@ -43,6 +43,18 @@ export class WebSocketSessionCoordinator {
   private legacyMissingSessionIdCount: number = 0;
   private legacyMissingSessionIdLastLogAt: number = 0;
 
+  private shouldIgnoreUnmappedSessionUpdate(update: SessionUpdate): boolean {
+    // session/update can arrive before the session/new response is processed,
+    // especially for background warmup/prepared sessions.
+    if (this.responseHandlers.size === 0) {
+      return true;
+    }
+
+    return update.sessionUpdate === "session_state_change"
+      || update.sessionUpdate === "available_commands_update"
+      || update.sessionUpdate === "config_option_update";
+  }
+
   constructor(sessionStore: SessionStore) {
     this.sessionStore = sessionStore;
     this.permissionManager = new PermissionRequestManager();
@@ -96,6 +108,10 @@ export class WebSocketSessionCoordinator {
           }
         } else {
           if (this.preparedSessionIds.has(update.sessionId)) {
+            return;
+          }
+
+          if (this.shouldIgnoreUnmappedSessionUpdate(update)) {
             return;
           }
 
@@ -218,7 +234,11 @@ export class WebSocketSessionCoordinator {
       return result.sessionId;
     } catch (error) {
       try {
-        await this.manager.sessionDestroy(result.sessionId);
+        if (this.manager?.isReady()) {
+          await this.manager.sessionDestroy(result.sessionId);
+        } else {
+          console.warn(`Skipping destroy for prepared session after warmup/config failure because WebSocket is disconnected (${result.sessionId})`);
+        }
       } catch (destroyError) {
         console.warn(`Failed to destroy prepared session after warmup/config failure (${result.sessionId}): ${destroyError}`);
       }

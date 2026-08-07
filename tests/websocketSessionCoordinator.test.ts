@@ -168,6 +168,7 @@ test("createPreparedSessionInternal destroys session when warmup prompt fails", 
   (config as any).warmupSessionInitialPrompt = "warmup prompt text";
 
   const manager = {
+    isReady: () => true,
     sessionNew: async () => {
       calls.push("new");
       return { sessionId: "prepared-fail-warmup" };
@@ -194,6 +195,45 @@ test("createPreparedSessionInternal destroys session when warmup prompt fails", 
       /Prepared session warmup prompt failed \(exitCode=23\)/
     );
     assert.deepEqual(calls, ["new", "prompt", "destroy:prepared-fail-warmup"]);
+  } finally {
+    (config as any).warmupSessionInitialPrompt = originalPrompt;
+  }
+});
+
+test("createPreparedSessionInternal skips destroy when warmup fails and websocket is disconnected", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const calls: string[] = [];
+  const originalPrompt = config.warmupSessionInitialPrompt;
+  (config as any).warmupSessionInitialPrompt = "warmup prompt text";
+
+  const manager = {
+    isReady: () => false,
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "prepared-fail-warmup-disconnected" };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => {
+      calls.push("prompt");
+      return { stopReason: "error" as const, exitCode: 24 };
+    },
+    sessionDestroy: async (sessionId: string) => {
+      calls.push(`destroy:${sessionId}`);
+      return undefined;
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  try {
+    await assert.rejects(
+      async () => (coordinator as any).createPreparedSessionInternal(),
+      /Prepared session warmup prompt failed \(exitCode=24\)/
+    );
+    assert.deepEqual(calls, ["new", "prompt"]);
   } finally {
     (config as any).warmupSessionInitialPrompt = originalPrompt;
   }
