@@ -110,6 +110,7 @@ test("PreparedSessionPool does not expire sessions when maxAgeMs is zero", async
 test("onReconnect reuses a pooled session that the backend still recognizes (no re-warming)", async () => {
   const created: string[] = [];
   const validated: string[] = [];
+  const events: Array<{ event: string; details?: Record<string, unknown> }> = [];
 
   const pool = new PreparedSessionPool({
     enabled: true,
@@ -121,7 +122,9 @@ test("onReconnect reuses a pooled session that the backend still recognizes (no 
       created.push(sessionId);
       return sessionId;
     },
-    onEvent: () => undefined,
+    onEvent: (event, details) => {
+      events.push({ event, details });
+    },
     validateSession: async (sessionId) => {
       validated.push(sessionId);
       return true;
@@ -134,9 +137,10 @@ test("onReconnect reuses a pooled session that the backend still recognizes (no 
   await pool.onReconnect();
 
   // The backend still recognizes prepared-1, so no new session should have
-  // been created - just validated and kept.
+  // been created - just validated, kept, and logged as resumed.
   assert.deepEqual(created, ["prepared-1"]);
   assert.deepEqual(validated, ["prepared-1"]);
+  assert.ok(events.some(({ event, details }) => event === "resumed" && details?.sessionId === "prepared-1"));
   assert.equal(await pool.claimPreparedSession(), "prepared-1");
 });
 
@@ -196,10 +200,41 @@ test("background watchdog periodically invalidates and replaces a killed session
 
   // Directly invoke the watchdog's health check (same method the periodic
   // timer calls) rather than waiting on a real interval.
-  await (pool as any).runHealthCheck();
+  await (pool as any).runHealthCheck("watchdog");
 
   assert.deepEqual(created, ["prepared-1", "prepared-2"]);
   assert.ok(events.some(({ event }) => event === "invalidated"));
   assert.equal(await pool.claimPreparedSession(), "prepared-2");
+});
+
+test("a routine watchdog tick that finds the session still fine logs nothing (no 'resumed' noise)", async () => {
+  const created: string[] = [];
+  const events: Array<{ event: string; details?: Record<string, unknown> }> = [];
+
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 0,
+    backgroundRetryMs: 1,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      return sessionId;
+    },
+    onEvent: (event, details) => {
+      events.push({ event, details });
+    },
+    validateSession: async () => true
+  });
+
+  await pool.initialize();
+  events.length = 0;
+
+  await (pool as any).runHealthCheck("watchdog");
+
+  // Nothing changed and nothing needed resuming, so the routine watchdog
+  // tick should stay silent - no "resumed", "invalidated", or "created" noise.
+  assert.deepEqual(events, []);
+  assert.equal(await pool.claimPreparedSession(), "prepared-1");
 });
 

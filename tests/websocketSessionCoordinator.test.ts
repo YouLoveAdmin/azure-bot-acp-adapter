@@ -383,7 +383,7 @@ test("watchdog health check invalidates a session the backend silently killed, w
 
   // Directly invoke the same private health check the watchdog timer uses,
   // instead of waiting on the real interval.
-  await (coordinator as any).preparedSessionPool.runHealthCheck();
+  await (coordinator as any).preparedSessionPool.runHealthCheck("watchdog");
 
   const claimed = await (coordinator as any).preparedSessionPool.claimPreparedSession();
   assert.equal(claimed, "prepared-2");

@@ -5,7 +5,8 @@ type PreparedSessionPoolEvent =
   | "failed"
   | "replenished"
   | "fallback"
-  | "invalidated";
+  | "invalidated"
+  | "resumed";
 
 type PreparedSessionPoolOptions = {
   enabled: boolean;
@@ -56,7 +57,8 @@ export class PreparedSessionPool {
     failed: 0,
     replenished: 0,
     fallback: 0,
-    invalidated: 0
+    invalidated: 0,
+    resumed: 0
   };
   private initialized = false;
   private watchdogTimer?: NodeJS.Timeout;
@@ -140,15 +142,22 @@ export class PreparedSessionPool {
       return;
     }
 
-    await this.runHealthCheck();
+    await this.runHealthCheck("reconnect");
   }
 
   /**
    * Validate every currently pooled session against the backend and evict
    * any the backend no longer recognizes, then top the pool back up to
    * target size. Used by both the periodic watchdog and reconnect handling.
+   *
+   * Logging is intentionally asymmetric: a routine watchdog tick that finds
+   * everything still fine stays silent (nothing changed, no need to log it
+   * every interval), but a session confirmed resumed after a reconnect is
+   * logged, and a session found dead - by either the watchdog or a
+   * reconnect - is always logged via "invalidated" since that is notable
+   * regardless of what triggered the check.
    */
-  private async runHealthCheck(): Promise<void> {
+  private async runHealthCheck(source: "watchdog" | "reconnect"): Promise<void> {
     if (!this.options.enabled || !this.options.validateSession) {
       return;
     }
@@ -160,6 +169,13 @@ export class PreparedSessionPool {
       const isValid = await this.options.validateSession(candidate.sessionId).catch(() => false);
       if (isValid) {
         survivors.push(candidate);
+        if (source === "reconnect") {
+          this.counters.resumed += 1;
+          this.options.onEvent("resumed", {
+            sessionId: candidate.sessionId,
+            ageMs: Date.now() - candidate.createdAt
+          });
+        }
       } else {
         this.counters.invalidated += 1;
         this.options.onEvent("invalidated", {
@@ -187,7 +203,7 @@ export class PreparedSessionPool {
     }
 
     const timer = setInterval(() => {
-      void this.runHealthCheck();
+      void this.runHealthCheck("watchdog");
     }, intervalMs);
     timer.unref?.();
     this.watchdogTimer = timer;
