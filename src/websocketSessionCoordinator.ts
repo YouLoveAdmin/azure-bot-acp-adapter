@@ -42,6 +42,14 @@ export class WebSocketSessionCoordinator {
   private permissionCallback?: (conversationKey: string, request: PermissionRequest) => Promise<"approved" | "cancelled" | "denied">;
   private legacyMissingSessionIdCount: number = 0;
   private legacyMissingSessionIdLastLogAt: number = 0;
+  /**
+   * Session-setup capability flags, normalized from whichever protocol
+   * shape (v1 or v2) the backend's initialize response used. See
+   * InitializeResult for the exact shape differences.
+   */
+  private supportsLoadSession: boolean = false;
+  private supportsResumeSession: boolean = false;
+  private supportsCloseSession: boolean = false;
 
   private shouldIgnoreUnmappedSessionUpdate(update: SessionUpdate): boolean {
     // session/update can arrive before the session/new response is processed,
@@ -98,15 +106,26 @@ export class WebSocketSessionCoordinator {
    * Backend resume semantics for an actively-loaded session are not fully
    * predictable across implementations - a healthy session can legitimately
    * reject resume for reasons unrelated to actually being gone (e.g.
-   * "already loaded", or other backend-specific protocol responses). To
+   * "already loaded", or the backend not implementing session/resume at all
+   * - a "Method not found" protocol error, which says nothing about the
+   * session's liveness and must never be read as "session not found"). To
    * avoid discarding and re-warming a perfectly healthy session on an
-   * ambiguous error, only treat resume failure as a genuine "session is
-   * gone" signal when the backend explicitly says so; any other error is
-   * treated as still valid (fail open, not fail closed).
+   * ambiguous or protocol-level error, only treat resume failure as a
+   * genuine "session is gone" signal when the backend explicitly reports the
+   * session itself is missing/expired; any other error - including resume
+   * being unsupported - is treated as still valid (fail open, not closed).
    */
   private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
     if (!this.manager) {
       return false;
+    }
+
+    if (!this.supportsResumeSession) {
+      // The backend's advertised capabilities already told us session/resume
+      // isn't available - don't waste a round trip (and risk another
+      // ambiguous protocol error) on a method we know isn't supported.
+      // Trust the session; it's still sitting untouched in the pool.
+      return true;
     }
 
     try {
@@ -114,7 +133,15 @@ export class WebSocketSessionCoordinator {
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const definitelyGone = /not found|does not exist|unknown session|no such session|invalid session|expired/i.test(message);
+
+      if (this.isResumeUnsupportedError(message)) {
+        // The backend doesn't implement session/resume at all (or requires a
+        // different call for this state) - this is a protocol capability
+        // gap, not a signal that the session died. Trust the session.
+        return true;
+      }
+
+      const definitelyGone = /session .*(not found|does not exist|expired)|unknown session|no such session|invalid session/i.test(message);
 
       if (definitelyGone) {
         console.warn(`Prepared session ${sessionId} failed validation (treated as gone): ${message}`);
@@ -239,10 +266,29 @@ export class WebSocketSessionCoordinator {
 
   /**
    * Handle initialize response
+   *
+   * Normalizes v1 (`agentCapabilities.loadSession` /
+   * `agentCapabilities.sessionCapabilities.{resume,close}`) and v2
+   * (`capabilities.session` presence implies resume/close are baseline,
+   * and session/load does not exist) into simple flags used to pick a
+   * fail-safe reattachment strategy without guessing which version is live.
    */
   private handleInitializeResult(result: InitializeResult): void {
     this.protocolVersion = result.protocolVersion;
     this.supportedAuthMethods = result.authMethods?.map(m => m.id) || [];
+
+    const v2Session = result.capabilities?.session;
+    if (v2Session !== undefined && v2Session !== null) {
+      this.supportsResumeSession = true;
+      this.supportsCloseSession = true;
+      this.supportsLoadSession = false;
+      return;
+    }
+
+    const v1Caps = result.agentCapabilities;
+    this.supportsLoadSession = v1Caps?.loadSession === true;
+    this.supportsResumeSession = Boolean(v1Caps?.sessionCapabilities?.resume);
+    this.supportsCloseSession = Boolean(v1Caps?.sessionCapabilities?.close);
   }
 
   private async applyDefaultSessionConfig(conversationKey: string, sessionId: string): Promise<void> {
@@ -427,6 +473,17 @@ export class WebSocketSessionCoordinator {
   }
 
   /**
+   * Whether a session/prompt failure indicates the session simply isn't
+   * currently active in backend memory (as opposed to some unrelated prompt
+   * failure such as a timeout or tool error), so it's worth attempting
+   * session/load to reattach it rather than immediately giving up on the
+   * conversation.
+   */
+  private isSessionNotLoadedError(message: string): boolean {
+    return /session .*(not found|not loaded|does not exist|expired)|unknown session|no such session|invalid session/i.test(message);
+  }
+
+  /**
    * Configure session option
    */
   async configureSession(conversationKey: string, sessionId: string, configId: string, value: string): Promise<void> {
@@ -479,7 +536,43 @@ export class WebSocketSessionCoordinator {
       handler.reset();
 
       // Send prompt and wait for response (session/update messages arrive during this call)
-      const result = await this.manager.sessionPrompt(sessionId, userMessage);
+      let result: SessionPromptResult;
+      try {
+        result = await this.manager.sessionPrompt(sessionId, userMessage);
+      } catch (promptError) {
+        const message = promptError instanceof Error ? promptError.message : String(promptError);
+
+        if (this.isSessionNotLoadedError(message)) {
+          // The backend keeps sessions on disk, but this one is not currently
+          // active in backend memory (e.g. after a WebSocket reconnect or a
+          // backend restart) even though the conversation's sessionId is
+          // still valid. Every chat message on an existing conversation
+          // should resume that same live session rather than silently
+          // losing it. The correct reattachment method depends on the
+          // negotiated protocol version: v2 removed session/load and folds
+          // full-history reattachment into session/resume via replayFrom,
+          // while v1 backends without resume support use session/load
+          // instead. When capabilities are unclear, try resume first and
+          // fall back to load - either one restores the same conversation.
+          console.warn(`Session ${sessionId} not currently loaded; resuming it and retrying: ${message}`);
+
+          if (this.supportsResumeSession) {
+            await this.manager.sessionResume(sessionId, "/workspace", [], { type: "start" });
+          } else if (this.supportsLoadSession) {
+            await this.manager.sessionLoad(sessionId, "/workspace");
+          } else {
+            try {
+              await this.manager.sessionResume(sessionId, "/workspace", [], { type: "start" });
+            } catch {
+              await this.manager.sessionLoad(sessionId, "/workspace");
+            }
+          }
+
+          result = await this.manager.sessionPrompt(sessionId, userMessage);
+        } else {
+          throw promptError;
+        }
+      }
 
       // Get buffered response
       const response = handler.getResponse();

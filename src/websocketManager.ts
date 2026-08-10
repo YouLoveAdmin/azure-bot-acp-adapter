@@ -11,6 +11,7 @@ import {
   SessionNewResult,
   SessionLoadResult,
   SessionResumeResult,
+  SessionResumeReplayFrom,
   SessionConfigResult,
   SessionPromptResult,
   SessionUpdate,
@@ -333,10 +334,30 @@ export class WebSocketManager {
    * Convenience methods for common operations
    */
 
-  async initialize(protocolVersion: number = 1): Promise<InitializeResult> {
+  async initialize(protocolVersion: number = 2): Promise<InitializeResult> {
+    // Request the latest protocol version we understand (2); per spec the
+    // Agent responds with that version if supported, otherwise the latest
+    // version it does support (e.g. 1), so this negotiates correctly either way.
+    //
+    // The v1 and v2 request bodies use different field names for the same
+    // information (clientCapabilities/clientInfo vs capabilities/info).
+    // Sending both is a safe, fail-safe way to support either backend
+    // version without needing to know in advance which one it speaks -
+    // JSON-RPC servers ignore fields they don't recognize.
+    const implementationInfo = {
+      name: "azure-bot-acp-adapter",
+      title: "Azure Bot ACP Adapter",
+      version: "0.1.0"
+    };
+
     return this.request("initialize", {
       protocolVersion,
-      clientCapabilities: {}
+      // v1 field names
+      clientCapabilities: {},
+      clientInfo: implementationInfo,
+      // v2 field names
+      capabilities: {},
+      info: implementationInfo
     });
   }
 
@@ -361,10 +382,24 @@ export class WebSocketManager {
     });
   }
 
-  async sessionResume(sessionId: string): Promise<SessionResumeResult> {
-    return this.request("session/resume", {
-      sessionId
-    });
+  /**
+   * Resume an existing session. Per spec, params include sessionId, cwd,
+   * and mcpServers; protocol v2 additionally supports an optional
+   * `replayFrom` cursor requesting full conversation-history replay
+   * (`{ type: "start" }`) - v1 has no equivalent and always resumes without
+   * replay (use session/load instead if history replay is needed on v1).
+   */
+  async sessionResume(
+    sessionId: string,
+    cwd: string = "/workspace",
+    mcpServers: any[] = [],
+    replayFrom?: SessionResumeReplayFrom
+  ): Promise<SessionResumeResult> {
+    const params: Record<string, unknown> = { sessionId, cwd, mcpServers };
+    if (replayFrom) {
+      params.replayFrom = replayFrom;
+    }
+    return this.request("session/resume", params);
   }
 
   async setConfigOption(sessionId: string, configId: string, value: string): Promise<SessionConfigResult> {
