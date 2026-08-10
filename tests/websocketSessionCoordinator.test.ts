@@ -36,6 +36,7 @@ test("sendMessage resumes an existing session via session/load and retries when 
 
   (coordinator as any).manager = manager;
   (coordinator as any).isInitialized = true;
+  (coordinator as any).supportsLoadSession = true;
 
   const response = await coordinator.sendMessage(conversationKey, "existing-session", "hello");
 
@@ -364,6 +365,7 @@ test("validatePreparedSessionCandidate trusts the session on an ambiguous resume
   };
 
   (coordinator as any).manager = manager;
+  (coordinator as any).supportsResumeSession = true;
 
   const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
   assert.equal(isValid, true);
@@ -387,6 +389,7 @@ test("validatePreparedSessionCandidate trusts the session when the backend does 
   };
 
   (coordinator as any).manager = manager;
+  (coordinator as any).supportsResumeSession = true;
 
   const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
   assert.equal(isValid, true);
@@ -407,6 +410,7 @@ test("validatePreparedSessionCandidate only invalidates on an explicit 'session 
   };
 
   (coordinator as any).manager = manager;
+  (coordinator as any).supportsResumeSession = true;
 
   const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
   assert.equal(isValid, false);
@@ -419,7 +423,7 @@ test("automatic background reconnect revalidates the prepared session via resume
   const calls: string[] = [];
 
   const manager = {
-    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    initialize: async () => ({ protocolVersion: 2, authMethods: [], capabilities: { session: {} } }),
     on: (event: string, callback: (...args: any[]) => any) => {
       listeners[event] = callback;
     },
@@ -466,7 +470,7 @@ test("automatic background reconnect discards and re-warms a session the backend
   let sessionCounter = 0;
 
   const manager = {
-    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    initialize: async () => ({ protocolVersion: 2, authMethods: [], capabilities: { session: {} } }),
     on: (event: string, callback: (...args: any[]) => any) => {
       listeners[event] = callback;
     },
@@ -498,7 +502,7 @@ test("watchdog health check invalidates a session the backend silently killed, w
   let backendKilledFirstSession = false;
 
   const manager = {
-    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    initialize: async () => ({ protocolVersion: 2, authMethods: [], capabilities: { session: {} } }),
     on: () => undefined,
     isReady: () => true,
     sessionNew: async () => {
@@ -528,5 +532,164 @@ test("watchdog health check invalidates a session the backend silently killed, w
 
   const claimed = await (coordinator as any).preparedSessionPool.claimPreparedSession();
   assert.equal(claimed, "prepared-2");
+});
+
+test("handleInitializeResult parses v1 capability shape (agentCapabilities.sessionCapabilities)", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  (coordinator as any).handleInitializeResult({
+    protocolVersion: 1,
+    authMethods: [],
+    agentCapabilities: {
+      loadSession: true,
+      sessionCapabilities: { resume: true, close: false }
+    }
+  });
+
+  assert.equal((coordinator as any).supportsLoadSession, true);
+  assert.equal((coordinator as any).supportsResumeSession, true);
+  assert.equal((coordinator as any).supportsCloseSession, false);
+});
+
+test("handleInitializeResult parses v2 capability shape (capabilities.session), which has no session/load", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  (coordinator as any).handleInitializeResult({
+    protocolVersion: 2,
+    authMethods: [],
+    capabilities: { session: {} }
+  });
+
+  assert.equal((coordinator as any).supportsLoadSession, false);
+  assert.equal((coordinator as any).supportsResumeSession, true);
+  assert.equal((coordinator as any).supportsCloseSession, true);
+});
+
+test("handleInitializeResult defaults all capability flags to false when neither shape is present", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  (coordinator as any).handleInitializeResult({
+    protocolVersion: 1,
+    authMethods: []
+  });
+
+  assert.equal((coordinator as any).supportsLoadSession, false);
+  assert.equal((coordinator as any).supportsResumeSession, false);
+  assert.equal((coordinator as any).supportsCloseSession, false);
+});
+
+test("validatePreparedSessionCandidate skips the session/resume round trip entirely when the backend doesn't support it", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const calls: string[] = [];
+
+  const manager = {
+    sessionResume: async () => {
+      calls.push("resume");
+      return { sessionId: "unused" };
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).supportsResumeSession = false;
+
+  const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
+
+  assert.equal(isValid, true);
+  assert.deepEqual(calls, []);
+});
+
+test("sendMessage reattaches via session/resume with replayFrom when the backend advertises v2 session capabilities", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-resume-v2";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "existing-session";
+  record.sessionState = "ready";
+  record.sessionMode = "prepared";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: any[] = [];
+
+  const manager = {
+    sessionPrompt: async () => {
+      if (calls.filter((c) => c[0] === "prompt").length === 0) {
+        calls.push(["prompt"]);
+        throw new Error("Session existing-session not found");
+      }
+      calls.push(["prompt"]);
+      return { stopReason: "completion" as const };
+    },
+    sessionResume: async (sessionId: string, cwd: string, mcpServers: any[], replayFrom: any) => {
+      calls.push(["resume", sessionId, cwd, mcpServers, replayFrom]);
+      return { sessionId };
+    },
+    sessionLoad: async (sessionId: string) => {
+      calls.push(["load", sessionId]);
+      return { sessionId };
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+  (coordinator as any).supportsResumeSession = true;
+
+  const response = await coordinator.sendMessage(conversationKey, "existing-session", "hello");
+
+  assert.equal(response.stopReason, "completion");
+  assert.deepEqual(calls, [
+    ["prompt"],
+    ["resume", "existing-session", "/workspace", [], { type: "start" }],
+    ["prompt"]
+  ]);
+});
+
+test("sendMessage falls back to trying resume then load when capabilities are unclear and resume fails", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-resume-fallback";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "existing-session";
+  record.sessionState = "ready";
+  record.sessionMode = "prepared";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: string[] = [];
+
+  const manager = {
+    sessionPrompt: async () => {
+      if (calls.filter((c) => c === "prompt").length === 0) {
+        calls.push("prompt");
+        throw new Error("Session existing-session not found");
+      }
+      calls.push("prompt");
+      return { stopReason: "completion" as const };
+    },
+    sessionResume: async () => {
+      calls.push("resume");
+      throw new Error('[-32601] "Method not found": session/resume');
+    },
+    sessionLoad: async (sessionId: string) => {
+      calls.push(`load:${sessionId}`);
+      return { sessionId };
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+  // Capabilities intentionally left at their default (unclear) state.
+
+  const response = await coordinator.sendMessage(conversationKey, "existing-session", "hello");
+
+  assert.equal(response.stopReason, "completion");
+  assert.deepEqual(calls, ["prompt", "resume", "load:existing-session", "prompt"]);
 });
 

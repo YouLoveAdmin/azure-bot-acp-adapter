@@ -56,15 +56,39 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcResponse | JsonRpcErrorResp
 
 /**
  * Backend Initialize Response
+ *
+ * The ACP session-setup capability shape changed between protocol v1 and v2:
+ * - v1 gates `session/load` behind `agentCapabilities.loadSession` and
+ *   `session/resume`/`session/close` behind the optional
+ *   `agentCapabilities.sessionCapabilities.resume`/`.close` fields.
+ * - v2 removed `session/load` entirely (merged into `session/resume` via an
+ *   optional `replayFrom` cursor) and made `session/resume`/`session/close`
+ *   baseline-supported whenever `capabilities.session` is present (even as
+ *   an empty object).
+ *
+ * Both shapes are modeled here so the coordinator can support either
+ * protocol version without assuming which one the backend actually speaks.
  */
 export interface InitializeResult {
   protocolVersion: number;
   authMethods?: AuthMethod[];
+  /** v1 response shape. */
   agentCapabilities?: {
     auth?: {
       logout?: boolean;
     };
     loadSession?: boolean;
+    sessionCapabilities?: {
+      resume?: Record<string, unknown> | boolean | null;
+      close?: Record<string, unknown> | boolean | null;
+      delete?: Record<string, unknown> | null;
+      additionalDirectories?: Record<string, unknown> | null;
+    };
+  };
+  /** v2 response shape. */
+  capabilities?: {
+    session?: Record<string, unknown> | null;
+    auth?: Record<string, unknown> | null;
   };
 }
 
@@ -88,6 +112,12 @@ export interface SessionLoadResult {
 export interface SessionResumeResult {
   sessionId: string;
 }
+
+/**
+ * Cursor controlling how much conversation history session/resume replays.
+ * Only relevant on protocol v2; omitted entirely means no replay.
+ */
+export type SessionResumeReplayFrom = { type: "start" };
 
 export interface SessionConfigResult {
   configOptions?: ConfigOption[];

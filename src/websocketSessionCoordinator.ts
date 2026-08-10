@@ -42,6 +42,14 @@ export class WebSocketSessionCoordinator {
   private permissionCallback?: (conversationKey: string, request: PermissionRequest) => Promise<"approved" | "cancelled" | "denied">;
   private legacyMissingSessionIdCount: number = 0;
   private legacyMissingSessionIdLastLogAt: number = 0;
+  /**
+   * Session-setup capability flags, normalized from whichever protocol
+   * shape (v1 or v2) the backend's initialize response used. See
+   * InitializeResult for the exact shape differences.
+   */
+  private supportsLoadSession: boolean = false;
+  private supportsResumeSession: boolean = false;
+  private supportsCloseSession: boolean = false;
 
   private shouldIgnoreUnmappedSessionUpdate(update: SessionUpdate): boolean {
     // session/update can arrive before the session/new response is processed,
@@ -110,6 +118,14 @@ export class WebSocketSessionCoordinator {
   private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
     if (!this.manager) {
       return false;
+    }
+
+    if (!this.supportsResumeSession) {
+      // The backend's advertised capabilities already told us session/resume
+      // isn't available - don't waste a round trip (and risk another
+      // ambiguous protocol error) on a method we know isn't supported.
+      // Trust the session; it's still sitting untouched in the pool.
+      return true;
     }
 
     try {
@@ -250,10 +266,29 @@ export class WebSocketSessionCoordinator {
 
   /**
    * Handle initialize response
+   *
+   * Normalizes v1 (`agentCapabilities.loadSession` /
+   * `agentCapabilities.sessionCapabilities.{resume,close}`) and v2
+   * (`capabilities.session` presence implies resume/close are baseline,
+   * and session/load does not exist) into simple flags used to pick a
+   * fail-safe reattachment strategy without guessing which version is live.
    */
   private handleInitializeResult(result: InitializeResult): void {
     this.protocolVersion = result.protocolVersion;
     this.supportedAuthMethods = result.authMethods?.map(m => m.id) || [];
+
+    const v2Session = result.capabilities?.session;
+    if (v2Session !== undefined && v2Session !== null) {
+      this.supportsResumeSession = true;
+      this.supportsCloseSession = true;
+      this.supportsLoadSession = false;
+      return;
+    }
+
+    const v1Caps = result.agentCapabilities;
+    this.supportsLoadSession = v1Caps?.loadSession === true;
+    this.supportsResumeSession = Boolean(v1Caps?.sessionCapabilities?.resume);
+    this.supportsCloseSession = Boolean(v1Caps?.sessionCapabilities?.close);
   }
 
   private async applyDefaultSessionConfig(conversationKey: string, sessionId: string): Promise<void> {
@@ -513,10 +548,26 @@ export class WebSocketSessionCoordinator {
           // backend restart) even though the conversation's sessionId is
           // still valid. Every chat message on an existing conversation
           // should resume that same live session rather than silently
-          // losing it, so re-attach it via session/load (session/resume is
-          // not implemented by this backend) and retry once before giving up.
-          console.warn(`Session ${sessionId} not currently loaded; resuming it via session/load and retrying: ${message}`);
-          await this.manager.sessionLoad(sessionId, "/workspace");
+          // losing it. The correct reattachment method depends on the
+          // negotiated protocol version: v2 removed session/load and folds
+          // full-history reattachment into session/resume via replayFrom,
+          // while v1 backends without resume support use session/load
+          // instead. When capabilities are unclear, try resume first and
+          // fall back to load - either one restores the same conversation.
+          console.warn(`Session ${sessionId} not currently loaded; resuming it and retrying: ${message}`);
+
+          if (this.supportsResumeSession) {
+            await this.manager.sessionResume(sessionId, "/workspace", [], { type: "start" });
+          } else if (this.supportsLoadSession) {
+            await this.manager.sessionLoad(sessionId, "/workspace");
+          } else {
+            try {
+              await this.manager.sessionResume(sessionId, "/workspace", [], { type: "start" });
+            } catch {
+              await this.manager.sessionLoad(sessionId, "/workspace");
+            }
+          }
+
           result = await this.manager.sessionPrompt(sessionId, userMessage);
         } else {
           throw promptError;
