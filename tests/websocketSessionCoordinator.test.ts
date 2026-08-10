@@ -271,6 +271,48 @@ test("createPreparedSessionInternal skips destroy when warmup fails and websocke
   }
 });
 
+test("validatePreparedSessionCandidate trusts the session on an ambiguous resume error (fails open, not closed)", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  const manager = {
+    sessionResume: async () => {
+      // Not an explicit "session is gone" signal - some other backend
+      // protocol error unrelated to the session's actual liveness.
+      throw new Error("already loaded");
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+
+  const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
+  assert.equal(isValid, true);
+});
+
+test("validatePreparedSessionCandidate only invalidates on an explicit 'session is gone' signal", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  const manager = {
+    sessionResume: async () => {
+      throw new Error("Session not found");
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+
+  const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
+  assert.equal(isValid, false);
+});
+
 test("automatic background reconnect revalidates the prepared session via resume and reuses it without re-warming", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
   const listeners: Record<string, (...args: any[]) => any> = {};

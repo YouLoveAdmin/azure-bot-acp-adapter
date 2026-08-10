@@ -93,10 +93,16 @@ export class WebSocketSessionCoordinator {
 
   /**
    * Check whether a pooled prepared-session id is still recognized by the
-   * backend. Uses session/resume; the backend reports "already loaded" for a
-   * session that is still active in memory, which we also treat as valid.
-   * Used by the in-memory watchdog and by reconnect handling to detect a
-   * session the backend silently killed, without needing a real chat event.
+   * backend. Uses session/resume to probe it.
+   *
+   * Backend resume semantics for an actively-loaded session are not fully
+   * predictable across implementations - a healthy session can legitimately
+   * reject resume for reasons unrelated to actually being gone (e.g.
+   * "already loaded", or other backend-specific protocol responses). To
+   * avoid discarding and re-warming a perfectly healthy session on an
+   * ambiguous error, only treat resume failure as a genuine "session is
+   * gone" signal when the backend explicitly says so; any other error is
+   * treated as still valid (fail open, not fail closed).
    */
   private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
     if (!this.manager) {
@@ -108,7 +114,14 @@ export class WebSocketSessionCoordinator {
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return /already loaded/i.test(message);
+      const definitelyGone = /not found|does not exist|unknown session|no such session|invalid session|expired/i.test(message);
+
+      if (definitelyGone) {
+        console.warn(`Prepared session ${sessionId} failed validation (treated as gone): ${message}`);
+        return false;
+      }
+
+      return true;
     }
   }
 
