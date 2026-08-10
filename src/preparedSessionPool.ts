@@ -5,8 +5,8 @@ type PreparedSessionPoolEvent =
   | "failed"
   | "replenished"
   | "fallback"
-  | "restored"
-  | "discarded";
+  | "invalidated"
+  | "resumed";
 
 type PreparedSessionPoolOptions = {
   enabled: boolean;
@@ -16,25 +16,20 @@ type PreparedSessionPoolOptions = {
   createPreparedSession: () => Promise<string>;
   onEvent: (event: PreparedSessionPoolEvent, details?: Record<string, unknown>) => void;
   /**
-   * Optional check used to determine whether a candidate session id (either
-   * still held in memory across a same-process reconnect, or loaded from
-   * disk after a full restart) is still recognized by the backend. When
-   * provided, candidates that validate are reused directly with no new
-   * warmup prompt; candidates that fail validation are discarded and
-   * replaced through the normal create+warmup path.
+   * Optional check used to determine whether a pooled session id is still
+   * recognized by the backend (e.g. via session/resume). Used both by the
+   * periodic in-memory watchdog and by the reconnect handler, so a session
+   * silently killed by the backend - or lost across a transport reconnect -
+   * is detected and replaced without waiting for a real chat request to
+   * discover it the hard way. Entirely in-memory: nothing is persisted to
+   * disk, so a full process restart simply starts a fresh pool.
    */
   validateSession?: (sessionId: string) => Promise<boolean>;
   /**
-   * Optional hook fired whenever the pool's contents change, so callers can
-   * persist the current pool to disk.
+   * Interval for the background watchdog health check. 0/undefined disables
+   * the watchdog (validation still runs on reconnect regardless).
    */
-  onPoolChanged?: (entries: PreparedSessionEntry[]) => void;
-  /**
-   * Optional hook fired for each candidate that passes validation and is
-   * restored into the pool, so callers can register the id the same way
-   * they would for a freshly created prepared session.
-   */
-  onSessionRestored?: (sessionId: string) => void;
+  watchdogIntervalMs?: number;
 };
 
 type PreparedSessionPoolSnapshot = {
@@ -62,28 +57,24 @@ export class PreparedSessionPool {
     failed: 0,
     replenished: 0,
     fallback: 0,
-    restored: 0,
-    discarded: 0
+    invalidated: 0,
+    resumed: 0
   };
   private initialized = false;
+  private watchdogTimer?: NodeJS.Timeout;
 
   constructor(options: PreparedSessionPoolOptions) {
     this.options = options;
   }
 
-  /**
-   * Initialize the pool. If candidate entries are supplied (e.g. loaded from
-   * disk after a process restart), each is validated against the backend
-   * first and reused without a new warmup prompt when still recognized.
-   * Any shortfall is topped up through the normal create+warmup path.
-   */
-  async initialize(candidates: PreparedSessionEntry[] = []): Promise<void> {
+  async initialize(): Promise<void> {
     if (!this.options.enabled || this.initialized) {
       return;
     }
 
     this.initialized = true;
-    await this.seedFromCandidates(candidates);
+    await this.replenishToTarget();
+    this.startWatchdog();
   }
 
   async claimPreparedSession(): Promise<string | undefined> {
@@ -109,7 +100,6 @@ export class PreparedSessionPool {
       return undefined;
     }
 
-    this.notifyPoolChanged();
     this.counters.claimed += 1;
     this.options.onEvent("claimed", {
       sessionId: entry.sessionId,
@@ -134,31 +124,96 @@ export class PreparedSessionPool {
   }
 
   async reset(): Promise<void> {
+    this.stopWatchdog();
     this.pool.splice(0, this.pool.length);
-    this.notifyPoolChanged();
     this.initialized = false;
   }
 
   /**
-   * Called after a WebSocket reconnect (same-process transport blip or a
-   * fresh handshake following a full restart). Rather than discarding the
-   * currently-known prepared sessions outright, each is re-validated against
-   * the backend and reused (no re-warming) when still recognized. Only
-   * candidates the backend no longer recognizes are replaced.
+   * Called after a WebSocket reconnect (same-process transport blip, or a
+   * fresh handshake following a full restart). Rather than discarding
+   * whatever the pool currently holds, each entry is re-validated against
+   * the backend (session/resume) and kept when still recognized; only
+   * entries the backend no longer recognizes are replaced. Purely in-memory.
    */
   async onReconnect(): Promise<void> {
-    const candidates = [...this.pool];
-    this.pool.splice(0, this.pool.length);
-    this.initialized = false;
-    await this.initialize(candidates);
+    if (!this.initialized) {
+      await this.initialize();
+      return;
+    }
+
+    await this.runHealthCheck("reconnect");
   }
 
   /**
-   * Current pool contents (shallow copy), for callers that need to persist
-   * or inspect the underlying entries rather than just the snapshot counts.
+   * Validate every currently pooled session against the backend and evict
+   * any the backend no longer recognizes, then top the pool back up to
+   * target size. Used by both the periodic watchdog and reconnect handling.
+   *
+   * Logging is intentionally asymmetric: a routine watchdog tick that finds
+   * everything still fine stays silent (nothing changed, no need to log it
+   * every interval), but a session confirmed resumed after a reconnect is
+   * logged, and a session found dead - by either the watchdog or a
+   * reconnect - is always logged via "invalidated" since that is notable
+   * regardless of what triggered the check.
    */
-  getEntries(): PreparedSessionEntry[] {
-    return [...this.pool];
+  private async runHealthCheck(source: "watchdog" | "reconnect"): Promise<void> {
+    if (!this.options.enabled || !this.options.validateSession) {
+      return;
+    }
+
+    const candidates = [...this.pool];
+    const survivors: PreparedSessionEntry[] = [];
+
+    for (const candidate of candidates) {
+      const isValid = await this.options.validateSession(candidate.sessionId).catch(() => false);
+      if (isValid) {
+        survivors.push(candidate);
+        if (source === "reconnect") {
+          this.counters.resumed += 1;
+          this.options.onEvent("resumed", {
+            sessionId: candidate.sessionId,
+            ageMs: Date.now() - candidate.createdAt
+          });
+        }
+      } else {
+        this.counters.invalidated += 1;
+        this.options.onEvent("invalidated", {
+          sessionId: candidate.sessionId,
+          ageMs: Date.now() - candidate.createdAt
+        });
+      }
+    }
+
+    if (survivors.length !== this.pool.length) {
+      this.pool.splice(0, this.pool.length, ...survivors);
+    }
+
+    await this.replenishToTarget();
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer || !this.options.validateSession) {
+      return;
+    }
+
+    const intervalMs = this.options.watchdogIntervalMs ?? 0;
+    if (intervalMs <= 0) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      void this.runHealthCheck("watchdog");
+    }, intervalMs);
+    timer.unref?.();
+    this.watchdogTimer = timer;
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
   }
 
   getSnapshot(): PreparedSessionPoolSnapshot {
@@ -170,46 +225,6 @@ export class PreparedSessionPool {
       inFlightCount: this.inFlight.size,
       counters: { ...this.counters }
     };
-  }
-
-  /**
-   * Validate candidate sessions (in-memory pre-reconnect entries, or entries
-   * loaded from disk) against the backend and keep the ones still
-   * recognized, without running the warmup prompt again. Any shortfall
-   * against poolSize is then topped up via the normal create+warmup path.
-   */
-  private async seedFromCandidates(candidates: PreparedSessionEntry[]): Promise<void> {
-    if (!this.options.enabled || !this.initialized) {
-      return;
-    }
-
-    const limited = candidates.slice(0, this.options.poolSize);
-    for (const candidate of limited) {
-      const isValid = this.options.validateSession
-        ? await this.options.validateSession(candidate.sessionId).catch(() => false)
-        : false;
-
-      if (isValid) {
-        this.pool.push(candidate);
-        this.counters.restored += 1;
-        this.options.onSessionRestored?.(candidate.sessionId);
-        this.options.onEvent("restored", {
-          sessionId: candidate.sessionId,
-          ageMs: Date.now() - candidate.createdAt,
-          poolSize: this.pool.length
-        });
-        this.notifyPoolChanged();
-      } else {
-        this.counters.discarded += 1;
-        this.options.onEvent("discarded", { sessionId: candidate.sessionId });
-      }
-    }
-
-    await this.replenishToTarget();
-  }
-
-  private notifyPoolChanged(): void {
-    this.options.onPoolChanged?.([...this.pool]);
   }
 
   private async replenishToTarget(): Promise<void> {
@@ -228,7 +243,6 @@ export class PreparedSessionPool {
         this.counters.replenished += 1;
         this.options.onEvent("created", { sessionId, createdAt, poolSize: this.pool.length });
         this.options.onEvent("replenished", { sessionId, createdAt, poolSize: this.pool.length });
-        this.notifyPoolChanged();
       } catch (error) {
         this.counters.failed += 1;
         this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
@@ -260,7 +274,6 @@ export class PreparedSessionPool {
 
     if (active.length !== this.pool.length) {
       this.pool.splice(0, this.pool.length, ...active);
-      this.notifyPoolChanged();
     }
   }
 
