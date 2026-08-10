@@ -293,6 +293,29 @@ test("validatePreparedSessionCandidate trusts the session on an ambiguous resume
   assert.equal(isValid, true);
 });
 
+test("validatePreparedSessionCandidate trusts the session when the backend does not implement session/resume", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+
+  const manager = {
+    sessionResume: async () => {
+      // Real production error: the backend doesn't implement session/resume
+      // at all. This is a protocol capability gap, not a signal that the
+      // session died, and must never be misread as "session not found".
+      throw new Error('[-32601] "Method not found": session/resume');
+    },
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  (coordinator as any).manager = manager;
+
+  const isValid = await (coordinator as any).validatePreparedSessionCandidate("some-session-id");
+  assert.equal(isValid, true);
+});
+
 test("validatePreparedSessionCandidate only invalidates on an explicit 'session is gone' signal", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
 

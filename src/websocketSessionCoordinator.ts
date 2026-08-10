@@ -98,11 +98,14 @@ export class WebSocketSessionCoordinator {
    * Backend resume semantics for an actively-loaded session are not fully
    * predictable across implementations - a healthy session can legitimately
    * reject resume for reasons unrelated to actually being gone (e.g.
-   * "already loaded", or other backend-specific protocol responses). To
+   * "already loaded", or the backend not implementing session/resume at all
+   * - a "Method not found" protocol error, which says nothing about the
+   * session's liveness and must never be read as "session not found"). To
    * avoid discarding and re-warming a perfectly healthy session on an
-   * ambiguous error, only treat resume failure as a genuine "session is
-   * gone" signal when the backend explicitly says so; any other error is
-   * treated as still valid (fail open, not fail closed).
+   * ambiguous or protocol-level error, only treat resume failure as a
+   * genuine "session is gone" signal when the backend explicitly reports the
+   * session itself is missing/expired; any other error - including resume
+   * being unsupported - is treated as still valid (fail open, not closed).
    */
   private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
     if (!this.manager) {
@@ -114,7 +117,15 @@ export class WebSocketSessionCoordinator {
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const definitelyGone = /not found|does not exist|unknown session|no such session|invalid session|expired/i.test(message);
+
+      if (this.isResumeUnsupportedError(message)) {
+        // The backend doesn't implement session/resume at all (or requires a
+        // different call for this state) - this is a protocol capability
+        // gap, not a signal that the session died. Trust the session.
+        return true;
+      }
+
+      const definitelyGone = /session .*(not found|does not exist|expired)|unknown session|no such session|invalid session/i.test(message);
 
       if (definitelyGone) {
         console.warn(`Prepared session ${sessionId} failed validation (treated as gone): ${message}`);
