@@ -4,7 +4,8 @@ type PreparedSessionPoolEvent =
   | "expired"
   | "failed"
   | "replenished"
-  | "fallback";
+  | "fallback"
+  | "invalidated";
 
 type PreparedSessionPoolOptions = {
   enabled: boolean;
@@ -13,6 +14,21 @@ type PreparedSessionPoolOptions = {
   backgroundRetryMs: number;
   createPreparedSession: () => Promise<string>;
   onEvent: (event: PreparedSessionPoolEvent, details?: Record<string, unknown>) => void;
+  /**
+   * Optional check used to determine whether a pooled session id is still
+   * recognized by the backend (e.g. via session/resume). Used both by the
+   * periodic in-memory watchdog and by the reconnect handler, so a session
+   * silently killed by the backend - or lost across a transport reconnect -
+   * is detected and replaced without waiting for a real chat request to
+   * discover it the hard way. Entirely in-memory: nothing is persisted to
+   * disk, so a full process restart simply starts a fresh pool.
+   */
+  validateSession?: (sessionId: string) => Promise<boolean>;
+  /**
+   * Interval for the background watchdog health check. 0/undefined disables
+   * the watchdog (validation still runs on reconnect regardless).
+   */
+  watchdogIntervalMs?: number;
 };
 
 type PreparedSessionPoolSnapshot = {
@@ -39,9 +55,11 @@ export class PreparedSessionPool {
     expired: 0,
     failed: 0,
     replenished: 0,
-    fallback: 0
+    fallback: 0,
+    invalidated: 0
   };
   private initialized = false;
+  private watchdogTimer?: NodeJS.Timeout;
 
   constructor(options: PreparedSessionPoolOptions) {
     this.options = options;
@@ -54,6 +72,7 @@ export class PreparedSessionPool {
 
     this.initialized = true;
     await this.replenishToTarget();
+    this.startWatchdog();
   }
 
   async claimPreparedSession(): Promise<string | undefined> {
@@ -103,13 +122,82 @@ export class PreparedSessionPool {
   }
 
   async reset(): Promise<void> {
+    this.stopWatchdog();
     this.pool.splice(0, this.pool.length);
     this.initialized = false;
   }
 
+  /**
+   * Called after a WebSocket reconnect (same-process transport blip, or a
+   * fresh handshake following a full restart). Rather than discarding
+   * whatever the pool currently holds, each entry is re-validated against
+   * the backend (session/resume) and kept when still recognized; only
+   * entries the backend no longer recognizes are replaced. Purely in-memory.
+   */
   async onReconnect(): Promise<void> {
-    await this.reset();
-    await this.initialize();
+    if (!this.initialized) {
+      await this.initialize();
+      return;
+    }
+
+    await this.runHealthCheck();
+  }
+
+  /**
+   * Validate every currently pooled session against the backend and evict
+   * any the backend no longer recognizes, then top the pool back up to
+   * target size. Used by both the periodic watchdog and reconnect handling.
+   */
+  private async runHealthCheck(): Promise<void> {
+    if (!this.options.enabled || !this.options.validateSession) {
+      return;
+    }
+
+    const candidates = [...this.pool];
+    const survivors: PreparedSessionEntry[] = [];
+
+    for (const candidate of candidates) {
+      const isValid = await this.options.validateSession(candidate.sessionId).catch(() => false);
+      if (isValid) {
+        survivors.push(candidate);
+      } else {
+        this.counters.invalidated += 1;
+        this.options.onEvent("invalidated", {
+          sessionId: candidate.sessionId,
+          ageMs: Date.now() - candidate.createdAt
+        });
+      }
+    }
+
+    if (survivors.length !== this.pool.length) {
+      this.pool.splice(0, this.pool.length, ...survivors);
+    }
+
+    await this.replenishToTarget();
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer || !this.options.validateSession) {
+      return;
+    }
+
+    const intervalMs = this.options.watchdogIntervalMs ?? 0;
+    if (intervalMs <= 0) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      void this.runHealthCheck();
+    }, intervalMs);
+    timer.unref?.();
+    this.watchdogTimer = timer;
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
   }
 
   getSnapshot(): PreparedSessionPoolSnapshot {

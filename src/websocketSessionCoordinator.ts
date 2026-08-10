@@ -69,7 +69,7 @@ export class WebSocketSessionCoordinator {
       },
       onEvent: (event, details) => {
         const payload = details ? details : {};
-        if (event === "expired" && typeof payload.sessionId === "string") {
+        if ((event === "expired" || event === "invalidated") && typeof payload.sessionId === "string") {
           this.preparedSessionIds.delete(payload.sessionId);
         }
 
@@ -85,8 +85,31 @@ export class WebSocketSessionCoordinator {
           stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
           error: payload.error
         });
-      }
+      },
+      validateSession: async (sessionId: string) => this.validatePreparedSessionCandidate(sessionId),
+      watchdogIntervalMs: config.preparedSessionWatchdogIntervalMs
     });
+  }
+
+  /**
+   * Check whether a pooled prepared-session id is still recognized by the
+   * backend. Uses session/resume; the backend reports "already loaded" for a
+   * session that is still active in memory, which we also treat as valid.
+   * Used by the in-memory watchdog and by reconnect handling to detect a
+   * session the backend silently killed, without needing a real chat event.
+   */
+  private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
+    if (!this.manager) {
+      return false;
+    }
+
+    try {
+      await this.manager.sessionResume(sessionId);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return /already loaded/i.test(message);
+    }
   }
 
   /**
@@ -176,6 +199,11 @@ export class WebSocketSessionCoordinator {
         const result = await this.manager!.initialize(this.protocolVersion);
         this.handleInitializeResult(result);
         this.isInitialized = true;
+        // The transport reconnected on its own (no chat request triggered this).
+        // Re-validate the pooled session(s) known before the drop via
+        // session/resume and reuse them without re-warming when the backend
+        // still recognizes them; only genuinely lost sessions are replaced.
+        await this.preparedSessionPool?.onReconnect();
         console.log("WebSocket re-initialization successful");
       } catch (error) {
         console.error("WebSocket re-initialization failed:", error);

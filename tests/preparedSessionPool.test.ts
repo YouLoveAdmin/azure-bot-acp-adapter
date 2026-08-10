@@ -106,3 +106,100 @@ test("PreparedSessionPool does not expire sessions when maxAgeMs is zero", async
     Date.now = originalNow;
   }
 });
+
+test("onReconnect reuses a pooled session that the backend still recognizes (no re-warming)", async () => {
+  const created: string[] = [];
+  const validated: string[] = [];
+
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 0,
+    backgroundRetryMs: 1,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      return sessionId;
+    },
+    onEvent: () => undefined,
+    validateSession: async (sessionId) => {
+      validated.push(sessionId);
+      return true;
+    }
+  });
+
+  await pool.initialize();
+  assert.deepEqual(created, ["prepared-1"]);
+
+  await pool.onReconnect();
+
+  // The backend still recognizes prepared-1, so no new session should have
+  // been created - just validated and kept.
+  assert.deepEqual(created, ["prepared-1"]);
+  assert.deepEqual(validated, ["prepared-1"]);
+  assert.equal(await pool.claimPreparedSession(), "prepared-1");
+});
+
+test("onReconnect discards and replaces a pooled session the backend no longer recognizes", async () => {
+  const created: string[] = [];
+
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 0,
+    backgroundRetryMs: 1,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      return sessionId;
+    },
+    onEvent: () => undefined,
+    validateSession: async () => false
+  });
+
+  await pool.initialize();
+  assert.deepEqual(created, ["prepared-1"]);
+
+  await pool.onReconnect();
+
+  assert.deepEqual(created, ["prepared-1", "prepared-2"]);
+  assert.equal(await pool.claimPreparedSession(), "prepared-2");
+});
+
+test("background watchdog periodically invalidates and replaces a killed session without any claim", async () => {
+  const created: string[] = [];
+  const events: Array<{ event: string; details?: Record<string, unknown> }> = [];
+  let backendKilledFirstSession = false;
+
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 0,
+    backgroundRetryMs: 1,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      return sessionId;
+    },
+    onEvent: (event, details) => {
+      events.push({ event, details });
+    },
+    validateSession: async () => !backendKilledFirstSession
+  });
+
+  await pool.initialize();
+  assert.deepEqual(created, ["prepared-1"]);
+
+  // Simulate the backend silently killing the pooled session with no
+  // WebSocket reconnect involved at all.
+  backendKilledFirstSession = true;
+
+  // Directly invoke the watchdog's health check (same method the periodic
+  // timer calls) rather than waiting on a real interval.
+  await (pool as any).runHealthCheck();
+
+  assert.deepEqual(created, ["prepared-1", "prepared-2"]);
+  assert.ok(events.some(({ event }) => event === "invalidated"));
+  assert.equal(await pool.claimPreparedSession(), "prepared-2");
+});
+

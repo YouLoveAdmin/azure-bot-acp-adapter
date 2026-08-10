@@ -17,6 +17,7 @@ type AppConfig = {
   preparedSessionPoolSize: number;
   preparedSessionMaxAgeMs: number;
   preparedSessionBackgroundRetryMs: number;
+  preparedSessionWatchdogIntervalMs: number;
   warmupSessionInitialPrompt: string;
   healthEndpointPath: string;
   jwtOnlyAuthEnabled: boolean;
@@ -128,6 +129,7 @@ export const config: AppConfig = {
   preparedSessionPoolSize: asNumber("ACP_PREPARED_SESSION_POOL_SIZE", 1),
   preparedSessionMaxAgeMs: asNumber("ACP_PREPARED_SESSION_MAX_AGE_MS", 0),
   preparedSessionBackgroundRetryMs: asNumber("ACP_PREPARED_SESSION_BACKGROUND_RETRY_MS", 10_000),
+  preparedSessionWatchdogIntervalMs: asNumber("ACP_PREPARED_SESSION_WATCHDOG_INTERVAL_MS", 60_000),
   warmupSessionInitialPrompt: (
     process.env.WARMUP_SESSION_INITIAL_PROMPT
     ?? process.env.WARMUP_SESSION_INITAL_PROMPT

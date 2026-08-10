@@ -270,3 +270,122 @@ test("createPreparedSessionInternal skips destroy when warmup fails and websocke
     (config as any).warmupSessionInitialPrompt = originalPrompt;
   }
 });
+
+test("automatic background reconnect revalidates the prepared session via resume and reuses it without re-warming", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const listeners: Record<string, (...args: any[]) => any> = {};
+  let sessionCounter = 0;
+  const calls: string[] = [];
+
+  const manager = {
+    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    on: (event: string, callback: (...args: any[]) => any) => {
+      listeners[event] = callback;
+    },
+    isReady: () => true,
+    sessionNew: async () => {
+      sessionCounter += 1;
+      calls.push("new");
+      return { sessionId: `prepared-${sessionCounter}` };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => {
+      calls.push("prompt");
+      return { stopReason: "completion" as const };
+    },
+    sessionDestroy: async () => undefined,
+    sessionResume: async () => {
+      calls.push("resume");
+      return { sessionId: "unused" };
+    },
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  await coordinator.initialize(manager as any);
+
+  const preSnapshot = (coordinator as any).preparedSessionPool.getSnapshot();
+  assert.equal(preSnapshot.preparedSessionCount, 1);
+  calls.length = 0;
+
+  // Simulate the WebSocketManager reconnecting entirely on its own (no
+  // incoming chat request involved) - e.g. an idle transport drop overnight.
+  await listeners["reconnected"]();
+
+  // The backend still recognizes the pre-reconnect session (session/resume
+  // succeeds), so it must be reused directly with no new session/new or
+  // warmup prompt call.
+  assert.deepEqual(calls, ["resume"]);
+  const claimed = await (coordinator as any).preparedSessionPool.claimPreparedSession();
+  assert.equal(claimed, "prepared-1");
+});
+
+test("automatic background reconnect discards and re-warms a session the backend no longer recognizes", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  const listeners: Record<string, (...args: any[]) => any> = {};
+  let sessionCounter = 0;
+
+  const manager = {
+    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    on: (event: string, callback: (...args: any[]) => any) => {
+      listeners[event] = callback;
+    },
+    isReady: () => true,
+    sessionNew: async () => {
+      sessionCounter += 1;
+      return { sessionId: `prepared-${sessionCounter}` };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionResume: async () => {
+      throw new Error("Session not found");
+    },
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  await coordinator.initialize(manager as any);
+
+  await listeners["reconnected"]();
+
+  const claimed = await (coordinator as any).preparedSessionPool.claimPreparedSession();
+  assert.equal(claimed, "prepared-2");
+});
+
+test("watchdog health check invalidates a session the backend silently killed, with no chat event or reconnect", async () => {
+  const coordinator = new WebSocketSessionCoordinator(new SessionStore());
+  let sessionCounter = 0;
+  let backendKilledFirstSession = false;
+
+  const manager = {
+    initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    on: () => undefined,
+    isReady: () => true,
+    sessionNew: async () => {
+      sessionCounter += 1;
+      return { sessionId: `prepared-${sessionCounter}` };
+    },
+    setConfigOption: async () => undefined,
+    sessionPrompt: async () => ({ stopReason: "completion" as const }),
+    sessionDestroy: async () => undefined,
+    sessionResume: async () => {
+      if (backendKilledFirstSession) {
+        throw new Error("Session not found");
+      }
+      return { sessionId: "unused" };
+    },
+    sessionLoad: async () => ({ sessionId: "unused" })
+  };
+
+  await coordinator.initialize(manager as any);
+  assert.equal((coordinator as any).preparedSessionPool.getSnapshot().preparedSessionCount, 1);
+
+  backendKilledFirstSession = true;
+
+  // Directly invoke the same private health check the watchdog timer uses,
+  // instead of waiting on the real interval.
+  await (coordinator as any).preparedSessionPool.runHealthCheck();
+
+  const claimed = await (coordinator as any).preparedSessionPool.claimPreparedSession();
+  assert.equal(claimed, "prepared-2");
+});
+
