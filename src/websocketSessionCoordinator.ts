@@ -5,7 +5,6 @@ import { StreamingResponseHandler } from "./streamingResponseHandler";
 import { PermissionRequestManager } from "./permissionRequestManager";
 import { PreparedSessionPool } from "./preparedSessionPool";
 import { logSessionLifecycleEvent } from "./logger";
-import { loadPersistedPreparedSessions, savePersistedPreparedSessions } from "./preparedSessionPersistence";
 import {
   InitializeResult,
   SessionNewResult,
@@ -70,7 +69,7 @@ export class WebSocketSessionCoordinator {
       },
       onEvent: (event, details) => {
         const payload = details ? details : {};
-        if ((event === "expired" || event === "discarded") && typeof payload.sessionId === "string") {
+        if (event === "expired" && typeof payload.sessionId === "string") {
           this.preparedSessionIds.delete(payload.sessionId);
         }
 
@@ -86,36 +85,8 @@ export class WebSocketSessionCoordinator {
           stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
           error: payload.error
         });
-      },
-      validateSession: async (sessionId: string) => this.validatePreparedSessionCandidate(sessionId),
-      onSessionRestored: (sessionId: string) => {
-        this.preparedSessionIds.add(sessionId);
-      },
-      onPoolChanged: (entries) => {
-        savePersistedPreparedSessions(entries);
       }
     });
-  }
-
-  /**
-   * Check whether a candidate prepared-session id (kept in memory across a
-   * same-process reconnect, or loaded from disk after a full restart) is
-   * still recognized by the backend. Uses `session/resume`; the backend
-   * reports "already loaded" for a session that is still active in memory,
-   * which we also treat as valid since it means the session is usable.
-   */
-  private async validatePreparedSessionCandidate(sessionId: string): Promise<boolean> {
-    if (!this.manager) {
-      return false;
-    }
-
-    try {
-      await this.manager.sessionResume(sessionId);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return /already loaded/i.test(message);
-    }
   }
 
   /**
@@ -205,11 +176,6 @@ export class WebSocketSessionCoordinator {
         const result = await this.manager!.initialize(this.protocolVersion);
         this.handleInitializeResult(result);
         this.isInitialized = true;
-        // The transport reconnected on its own (no chat request triggered this).
-        // Re-validate any prepared/warm session(s) known before the drop via
-        // session/resume and reuse them without re-warming when the backend
-        // still recognizes them; only genuinely lost sessions are replaced.
-        await this.preparedSessionPool?.onReconnect();
         console.log("WebSocket re-initialization successful");
       } catch (error) {
         console.error("WebSocket re-initialization failed:", error);
@@ -222,12 +188,7 @@ export class WebSocketSessionCoordinator {
       const result = await this.manager.initialize(this.protocolVersion);
       this.handleInitializeResult(result);
       this.isInitialized = true;
-      // On a fresh process start, check disk for prepared sessions left over
-      // from a previous run (backend sessions are disk-based and can outlive
-      // this process). Each candidate is validated via session/resume before
-      // reuse; only the shortfall is created and warmed fresh.
-      const persistedCandidates = loadPersistedPreparedSessions();
-      await this.preparedSessionPool?.initialize(persistedCandidates);
+      await this.preparedSessionPool?.initialize();
       console.log("WebSocket initialization successful");
     } catch (error) {
       console.error("WebSocket initialization failed:", error);
