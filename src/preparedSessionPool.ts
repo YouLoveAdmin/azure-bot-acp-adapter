@@ -62,6 +62,7 @@ export class PreparedSessionPool {
   };
   private initialized = false;
   private watchdogTimer?: NodeJS.Timeout;
+  private replenishPromise: Promise<void> | null = null;
 
   constructor(options: PreparedSessionPoolOptions) {
     this.options = options;
@@ -228,6 +229,24 @@ export class PreparedSessionPool {
   }
 
   private async replenishToTarget(): Promise<void> {
+    // Reentrant-safe: the watchdog, a reconnect health check, and a claim's
+    // background refill can all try to top up the pool independently. If a
+    // replenishment is already running, share that same in-flight promise
+    // instead of starting a second overlapping create-loop - two concurrent
+    // loops racing on `pool.length < poolSize` is exactly what caused more
+    // sessions to be created than the configured pool size.
+    if (this.replenishPromise) {
+      return this.replenishPromise;
+    }
+
+    const task = this.doReplenish().finally(() => {
+      this.replenishPromise = null;
+    });
+    this.replenishPromise = task;
+    return task;
+  }
+
+  private async doReplenish(): Promise<void> {
     if (!this.options.enabled || !this.initialized) {
       return;
     }
@@ -282,15 +301,7 @@ export class PreparedSessionPool {
       return undefined;
     }
 
-    if (this.inFlight.size > 0) {
-      return undefined;
-    }
-
-    const task = this.replenishToTarget().catch((error) => {
-      this.counters.failed += 1;
-      this.options.onEvent("failed", { error: error instanceof Error ? error.message : String(error) });
-    });
-
+    const task = this.replenishToTarget();
     this.inFlight.add(task);
     void task.finally(() => {
       this.inFlight.delete(task);
