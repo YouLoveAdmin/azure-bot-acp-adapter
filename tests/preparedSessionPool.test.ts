@@ -28,6 +28,58 @@ test("PreparedSessionPool claims a prepared session and removes it from the pool
   assert.equal(await pool.claimPreparedSession(), "prepared-2");
 });
 
+test("a claim's background refill and a concurrent reconnect health check never overshoot poolSize", async () => {
+  const created: string[] = [];
+  let releaseCreate: (() => void) | undefined;
+  let pauseNextCreate = false;
+
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 0,
+    backgroundRetryMs: 1,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      if (pauseNextCreate) {
+        // Pause here so a second, concurrent replenishment trigger has a
+        // chance to race this one before it finishes creating the session.
+        await new Promise<void>((resolve) => {
+          releaseCreate = resolve;
+        });
+      }
+      return sessionId;
+    },
+    onEvent: () => undefined,
+    validateSession: async () => true
+  });
+
+  await pool.initialize();
+  assert.deepEqual(created, ["prepared-1"]);
+
+  pauseNextCreate = true;
+  const claimed = await pool.claimPreparedSession();
+  assert.equal(claimed, "prepared-1");
+
+  // claimPreparedSession() just kicked off a background refill (creating
+  // prepared-2) which is now paused inside createPreparedSession. While it
+  // is still in flight, trigger a second refill path (reconnect health
+  // check) concurrently - before the fix, this could start a second,
+  // overlapping create-loop and produce two sessions for a pool sized for one.
+  const reconnectPromise = pool.onReconnect();
+
+  // Let the paused createPreparedSession call complete.
+  releaseCreate?.();
+  await reconnectPromise;
+
+  // Only one replacement session should have been created, not two.
+  assert.deepEqual(created, ["prepared-1", "prepared-2"]);
+  assert.equal(await pool.claimPreparedSession(), "prepared-2");
+  assert.equal(await pool.claimPreparedSession(), undefined);
+});
+
+
+
 test("PreparedSessionPool evicts expired sessions before fallback and replenishes", async () => {
   const created: string[] = [];
   const events: Array<{ event: string; details?: Record<string, unknown> }> = [];
