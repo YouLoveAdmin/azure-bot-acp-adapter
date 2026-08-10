@@ -438,6 +438,17 @@ export class WebSocketSessionCoordinator {
   }
 
   /**
+   * Whether a session/prompt failure indicates the session simply isn't
+   * currently active in backend memory (as opposed to some unrelated prompt
+   * failure such as a timeout or tool error), so it's worth attempting
+   * session/load to reattach it rather than immediately giving up on the
+   * conversation.
+   */
+  private isSessionNotLoadedError(message: string): boolean {
+    return /session .*(not found|not loaded|does not exist|expired)|unknown session|no such session|invalid session/i.test(message);
+  }
+
+  /**
    * Configure session option
    */
   async configureSession(conversationKey: string, sessionId: string, configId: string, value: string): Promise<void> {
@@ -490,7 +501,27 @@ export class WebSocketSessionCoordinator {
       handler.reset();
 
       // Send prompt and wait for response (session/update messages arrive during this call)
-      const result = await this.manager.sessionPrompt(sessionId, userMessage);
+      let result: SessionPromptResult;
+      try {
+        result = await this.manager.sessionPrompt(sessionId, userMessage);
+      } catch (promptError) {
+        const message = promptError instanceof Error ? promptError.message : String(promptError);
+
+        if (this.isSessionNotLoadedError(message)) {
+          // The backend keeps sessions on disk, but this one is not currently
+          // active in backend memory (e.g. after a WebSocket reconnect or a
+          // backend restart) even though the conversation's sessionId is
+          // still valid. Every chat message on an existing conversation
+          // should resume that same live session rather than silently
+          // losing it, so re-attach it via session/load (session/resume is
+          // not implemented by this backend) and retry once before giving up.
+          console.warn(`Session ${sessionId} not currently loaded; resuming it via session/load and retrying: ${message}`);
+          await this.manager.sessionLoad(sessionId, "/workspace");
+          result = await this.manager.sessionPrompt(sessionId, userMessage);
+        } else {
+          throw promptError;
+        }
+      }
 
       // Get buffered response
       const response = handler.getResponse();

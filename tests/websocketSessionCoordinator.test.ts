@@ -4,6 +4,82 @@ import { WebSocketSessionCoordinator } from "../src/websocketSessionCoordinator"
 import { SessionStore } from "../src/sessionStore";
 import { config } from "../src/config";
 
+test("sendMessage resumes an existing session via session/load and retries when the backend reports it isn't loaded", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-resume";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "existing-session";
+  record.sessionState = "ready";
+  record.sessionMode = "prepared";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: string[] = [];
+
+  const manager = {
+    sessionPrompt: async () => {
+      if (calls.filter((c) => c === "prompt").length === 0) {
+        calls.push("prompt");
+        throw new Error("Session existing-session not found");
+      }
+      calls.push("prompt");
+      return { stopReason: "completion" as const };
+    },
+    sessionLoad: async (sessionId: string) => {
+      calls.push(`load:${sessionId}`);
+      return { sessionId };
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  const response = await coordinator.sendMessage(conversationKey, "existing-session", "hello");
+
+  assert.equal(response.stopReason, "completion");
+  assert.deepEqual(calls, ["prompt", "load:existing-session", "prompt"]);
+});
+
+test("sendMessage does not attempt session/load for an unrelated prompt failure", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-unrelated-error";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "existing-session";
+  record.sessionState = "ready";
+  record.sessionMode = "prepared";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: string[] = [];
+
+  const manager = {
+    sessionPrompt: async () => {
+      calls.push("prompt");
+      throw new Error("Request timeout for method \"session/prompt\"");
+    },
+    sessionLoad: async (sessionId: string) => {
+      calls.push(`load:${sessionId}`);
+      return { sessionId };
+    },
+    sessionResume: async () => ({ sessionId: "unused" }),
+    sessionNew: async () => ({ sessionId: "unused" }),
+    setConfigOption: async () => undefined,
+    sessionDestroy: async () => undefined
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  await assert.rejects(
+    async () => coordinator.sendMessage(conversationKey, "existing-session", "hello"),
+    /Request timeout/
+  );
+
+  assert.deepEqual(calls, ["prompt"]);
+});
+
 test("resumeSessionWithFallback uses session/load when session/resume is unsupported", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
   const calls: string[] = [];
