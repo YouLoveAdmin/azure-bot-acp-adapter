@@ -701,7 +701,8 @@ async function ensureWebSocketReady(): Promise<void> {
 }
 
 async function initializeWebSocketOnStartup(): Promise<void> {
-  const maxAttempts = 6;
+  const maxAttempts = config.websocketStartupMaxAttempts;
+  const retryDelayMs = config.websocketStartupRetryDelayMs;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -710,7 +711,7 @@ async function initializeWebSocketOnStartup(): Promise<void> {
     } catch (error) {
       console.error(`Initial WebSocket connection attempt ${attempt}/${maxAttempts} failed:`, error);
       if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       }
     }
   }
