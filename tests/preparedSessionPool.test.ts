@@ -28,7 +28,36 @@ test("PreparedSessionPool claims a prepared session and removes it from the pool
   assert.equal(await pool.claimPreparedSession(), "prepared-2");
 });
 
-test("a claim's background refill and a concurrent reconnect health check never overshoot poolSize", async () => {
+test("claimPreparedSession does not itself trigger replenishment (deferred to scheduleReplenishmentAfterSuccess)", async () => {
+  const created: string[] = [];
+  const pool = new PreparedSessionPool({
+    enabled: true,
+    poolSize: 1,
+    maxAgeMs: 60_000,
+    backgroundRetryMs: 1_000,
+    createPreparedSession: async () => {
+      const sessionId = `prepared-${created.length + 1}`;
+      created.push(sessionId);
+      return sessionId;
+    },
+    onEvent: () => undefined
+  });
+
+  await pool.initialize();
+  assert.deepEqual(created, ["prepared-1"]);
+
+  const claimed = await pool.claimPreparedSession();
+  assert.equal(claimed, "prepared-1");
+
+  // A successful claim must not race the real prompt it's about to serve
+  // with a concurrent session/new + warmup session/prompt call on the same
+  // backend connection. Give any fire-and-forget background work a chance
+  // to run before asserting nothing was created.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(created, ["prepared-1"]);
+});
+
+test("a deferred post-claim replenishment and a concurrent reconnect health check never overshoot poolSize", async () => {
   const created: string[] = [];
   let releaseCreate: (() => void) | undefined;
   let pauseNextCreate = false;
@@ -61,16 +90,20 @@ test("a claim's background refill and a concurrent reconnect health check never 
   const claimed = await pool.claimPreparedSession();
   assert.equal(claimed, "prepared-1");
 
-  // claimPreparedSession() just kicked off a background refill (creating
-  // prepared-2) which is now paused inside createPreparedSession. While it
-  // is still in flight, trigger a second refill path (reconnect health
-  // check) concurrently - before the fix, this could start a second,
-  // overlapping create-loop and produce two sessions for a pool sized for one.
+  // claimPreparedSession() itself must NOT kick off a background refill -
+  // that would race the real prompt the claimed session is about to serve.
+  // The caller triggers the deferred refill only after the reply is sent,
+  // via scheduleReplenishmentAfterSuccess(). Start that now (creating
+  // prepared-2, paused inside createPreparedSession) and, while it is still
+  // in flight, trigger a second refill path (reconnect health check)
+  // concurrently - before the fix, this could start a second, overlapping
+  // create-loop and produce two sessions for a pool sized for one.
+  const deferredReplenishPromise = pool.scheduleReplenishmentAfterSuccess();
   const reconnectPromise = pool.onReconnect();
 
   // Let the paused createPreparedSession call complete.
   releaseCreate?.();
-  await reconnectPromise;
+  await Promise.all([deferredReplenishPromise, reconnectPromise]);
 
   // Only one replacement session should have been created, not two.
   assert.deepEqual(created, ["prepared-1", "prepared-2"]);

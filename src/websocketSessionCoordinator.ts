@@ -50,6 +50,15 @@ export class WebSocketSessionCoordinator {
   private supportsLoadSession: boolean = false;
   private supportsResumeSession: boolean = false;
   private supportsCloseSession: boolean = false;
+  /**
+   * Conversation keys whose current turn claimed a session from the prepared
+   * pool and therefore owe the pool a deferred replenishment. Populated in
+   * ensureSession() when a claim is bound, and drained (once) via
+   * consumeClaimedFromPool() by the caller after the user-visible reply has
+   * actually been delivered - not immediately, so the pool's session/new +
+   * warmup session/prompt never race the real prompt this claim is serving.
+   */
+  private pendingPoolReplenishment: Set<string> = new Set();
 
   private shouldIgnoreUnmappedSessionUpdate(update: SessionUpdate): boolean {
     // session/update can arrive before the session/new response is processed,
@@ -664,6 +673,7 @@ export class WebSocketSessionCoordinator {
           sessionRecord.sessionState = "ready";
           sessionRecord.initializedAt = Date.now();
           this.sessionToConversationMap.set(preparedSessionId, conversationKey);
+          this.pendingPoolReplenishment.add(conversationKey);
           logSessionLifecycleEvent({
             event: "prepared-session-bound",
             sessionId: preparedSessionId,
@@ -763,6 +773,17 @@ export class WebSocketSessionCoordinator {
 
   async triggerPreparedSessionReplenishmentAfterSuccess(): Promise<void> {
     await this.preparedSessionPool?.scheduleReplenishmentAfterSuccess();
+  }
+
+  /**
+   * Returns true (once) if the given conversation's current turn claimed a
+   * session from the prepared pool and hasn't yet had its deferred
+   * replenishment triggered. Callers should invoke this after the
+   * user-visible reply for that turn has been sent, and if it returns true,
+   * follow up with triggerPreparedSessionReplenishmentAfterSuccess().
+   */
+  consumeClaimedFromPool(conversationKey: string): boolean {
+    return this.pendingPoolReplenishment.delete(conversationKey);
   }
 
   getPreparedSessionPoolSnapshot() {

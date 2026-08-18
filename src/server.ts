@@ -518,11 +518,10 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{ text
   // Send message to backend and get buffered response
   const response = await wsCoordinator.sendMessage(conversationKey, sessionId, input.userText);
 
-  // Defer pool replenishment until after the user-visible reply has been handled.
-  // This keeps the response path fast and avoids adding session creation latency to the request.
-  void wsCoordinator.triggerPreparedSessionReplenishmentAfterSuccess().catch((error) => {
-    console.warn("Prepared-session replenishment deferred after success failed:", error);
-  });
+  // Pool replenishment (if this turn claimed a prepared session) is
+  // deferred until after the user-visible reply has actually been sent -
+  // see consumeClaimedFromPool()/triggerPreparedSessionReplenishmentAfterSuccess()
+  // at each outgoing-activity call site below.
 
   // Format user-friendly response message
   let replyMessage = response.text;
@@ -544,6 +543,22 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{ text
 
 async function buildConversationReply(input: MessageRoutingInput): Promise<{ text: string; stopReason: string }> {
   return routeMessageToBackend(input);
+}
+
+/**
+ * If this conversation's current turn claimed a session from the prepared
+ * pool, trigger the pool's watchdog/replenishment now. Call this only after
+ * the user-visible reply has actually been sent, so the pool's session/new +
+ * warmup session/prompt never race the real backend prompt for this turn.
+ */
+function replenishPreparedPoolIfClaimed(conversationKey: string): void {
+  if (!wsCoordinator?.consumeClaimedFromPool(conversationKey)) {
+    return;
+  }
+
+  void wsCoordinator.triggerPreparedSessionReplenishmentAfterSuccess().catch((error) => {
+    console.warn("Prepared-session replenishment deferred after outgoing-activity failed:", error);
+  });
 }
 
 async function sendStreamingTypingIndicators(context: TurnContext): Promise<() => void> {
@@ -744,6 +759,7 @@ app.post("/api/messages", async (req, res) => {
     const channelId = activity.channelId ?? "msteams";
     const conversationId = activity.conversation?.id ?? "jwt-only-conversation";
     const userId = activity.from?.id ?? "jwt-only-user";
+    const conversationKey = `${channelId}|${conversationId}|${userId}`;
 
     try {
       const reply = await routeMessageToBackend({ channelId, conversationId, userId, userText });
@@ -773,6 +789,8 @@ app.post("/api/messages", async (req, res) => {
         const message = sendError instanceof Error ? sendError.message : String(sendError);
         res.status(500).json({ error: message });
       }
+    } finally {
+      replenishPreparedPoolIfClaimed(conversationKey);
     }
     return;
   }
@@ -857,6 +875,7 @@ app.post("/api/messages", async (req, res) => {
           } finally {
             stopProactiveTyping();
             streamForwardState.delete(conversationKey);
+            replenishPreparedPoolIfClaimed(conversationKey);
           }
         })();
       } finally {
@@ -903,6 +922,7 @@ app.post("/api/messages", async (req, res) => {
       );
     } finally {
       stopStreamingIndicators();
+      replenishPreparedPoolIfClaimed(conversationKey);
     }
   });
 });
@@ -949,6 +969,8 @@ if (process.env.NODE_ENV === "development") {
       console.error("Simulation endpoint error", { error, conversationKey });
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
+    } finally {
+      replenishPreparedPoolIfClaimed(conversationKey);
     }
   });
 
@@ -1035,6 +1057,7 @@ if (process.env.NODE_ENV === "development") {
           );
         } finally {
           stopStreamingIndicators();
+          replenishPreparedPoolIfClaimed(conversationKey);
         }
       });
       return;
@@ -1064,6 +1087,8 @@ if (process.env.NODE_ENV === "development") {
       console.error("[DEV] Message endpoint error", { error, conversationKey });
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: message });
+    } finally {
+      replenishPreparedPoolIfClaimed(conversationKey);
     }
   });
 

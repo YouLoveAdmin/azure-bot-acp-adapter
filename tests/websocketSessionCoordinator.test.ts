@@ -139,6 +139,10 @@ test("ensureSession binds the claimed prepared session directly without calling 
 
   assert.equal(sessionId, "prepared-session");
   assert.deepEqual(calls, []);
+  // Claiming a prepared session must mark it for a deferred replenishment
+  // trigger (fired only after the reply is sent), consumed exactly once.
+  assert.equal(coordinator.consumeClaimedFromPool("conv-2"), true);
+  assert.equal(coordinator.consumeClaimedFromPool("conv-2"), false);
 });
 
 test("ensureSession falls back to a fresh session when the prepared pool has nothing to claim", async () => {
