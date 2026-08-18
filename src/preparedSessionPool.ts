@@ -108,7 +108,12 @@ export class PreparedSessionPool {
       remainingPoolSize: this.pool.length
     });
 
-    this.startReplenishmentTask();
+    // Deliberately do NOT start replenishment here. Kicking off session/new +
+    // the warmup session/prompt on the backend right now would race the
+    // real user prompt this claimed session is about to serve, competing
+    // for the same backend concurrency/bandwidth. The caller is expected to
+    // call scheduleReplenishmentAfterSuccess() once the user-visible reply
+    // has actually been delivered.
 
     return entry.sessionId;
   }
