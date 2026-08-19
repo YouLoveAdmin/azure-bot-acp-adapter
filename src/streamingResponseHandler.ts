@@ -79,9 +79,13 @@ export class StreamingResponseHandler {
       const message = record.data && typeof record.data === "object"
         ? record.data as Record<string, unknown>
         : record;
-      const toolRequests = message.toolRequests;
+      const envelopeToolRequests = record.toolRequests;
+      const messageToolRequests = message.toolRequests;
 
-      if (Array.isArray(toolRequests) && toolRequests.length > 0) {
+      if (
+        (Array.isArray(envelopeToolRequests) && envelopeToolRequests.length > 0)
+        || (Array.isArray(messageToolRequests) && messageToolRequests.length > 0)
+      ) {
         return [];
       }
 
