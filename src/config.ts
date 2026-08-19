@@ -152,6 +152,6 @@ export const config: AppConfig = {
   jwtClockSkewSeconds: asNumber("JWT_CLOCK_SKEW_SECONDS", 300),
   outgoingActivityLogEnabled: asBoolean("OUTGOING_ACTIVITY_LOG_ENABLED", true),
   streamingResponsesEnabled: asBoolean("STREAMING_RESPONSES_ENABLED", false),
-  verboseSessionUpdates: asBoolean("VERBOSE_SESSION_UPDATES", true),
+  verboseSessionUpdates: asBoolean("VERBOSE_SESSION_UPDATES", false),
   symlinkMappings: process.env.ACP_SYMLINK_MAPPINGS ?? ""
 };

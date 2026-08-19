@@ -196,7 +196,7 @@ The response reports service health, in-memory session count, and remote WebSock
 | `HEALTH_ENDPOINT_PATH` | No | `/healthz` | Health endpoint path |
 | `OUTGOING_ACTIVITY_LOG_ENABLED` | No | `true` | Successful outgoing activity logging |
 | `STREAMING_RESPONSES_ENABLED` | No | `false` | Process streamed updates while preserving channel-compatible delivery |
-| `VERBOSE_SESSION_UPDATES` | No | `true` | Forward supported Teams session-update previews |
+| `VERBOSE_SESSION_UPDATES` | No | `false` | Diagnostic-only forwarding of intermediate message/tool previews to Teams |
 
 ### Authentication
 

@@ -98,6 +98,27 @@ test("StreamingResponseHandler accepts a final JSONL assistant message with tool
   assert.equal(handler.getText(), "Final answer");
 });
 
+test("StreamingResponseHandler filters tool requests attached to the JSONL envelope", () => {
+  const handler = new StreamingResponseHandler();
+
+  handler.handleUpdate({
+    sessionUpdate: "agent_message",
+    content: {
+      type: "json",
+      json: {
+        type: "assistant.message",
+        toolRequests: [{ name: "search" }],
+        data: {
+          content: "I'll search the workspace.",
+          toolRequests: []
+        }
+      }
+    }
+  });
+
+  assert.equal(handler.getText(), "");
+});
+
 test("StreamingResponseHandler does not duplicate an identical completion snapshot", () => {
   const handler = new StreamingResponseHandler();
   const finalMessage = {
