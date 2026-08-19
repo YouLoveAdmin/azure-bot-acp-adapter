@@ -75,6 +75,19 @@ export class StreamingResponseHandler {
     const record = value as Record<string, unknown>;
     const fragments: string[] = [];
 
+    if (record.type === "assistant.message") {
+      const message = record.data && typeof record.data === "object"
+        ? record.data as Record<string, unknown>
+        : record;
+      const toolRequests = message.toolRequests;
+
+      if (Array.isArray(toolRequests) && toolRequests.length > 0) {
+        return [];
+      }
+
+      return this.extractTextFragments(message.content);
+    }
+
     if (typeof record.text === "string" && record.text.trim().length > 0) {
       fragments.push(record.text);
     }
@@ -93,6 +106,10 @@ export class StreamingResponseHandler {
 
     if (record.parts !== undefined) {
       fragments.push(...this.extractTextFragments(record.parts));
+    }
+
+    if (record.data !== undefined) {
+      fragments.push(...this.extractTextFragments(record.data));
     }
 
     return fragments;
@@ -114,7 +131,9 @@ export class StreamingResponseHandler {
   private handleMessageCompletion(update: SessionUpdate): void {
     const fragments = this.extractTextFragments(update.content);
     for (const fragment of fragments) {
-      this.textBuffer.push(fragment);
+      if (this.getText() !== fragment) {
+        this.textBuffer.push(fragment);
+      }
     }
 
     // Mark streaming as complete for this batch
