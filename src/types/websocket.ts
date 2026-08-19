@@ -142,6 +142,7 @@ export interface SessionPromptResult {
  */
 export interface SessionUpdate {
   sessionId?: string;
+  messageId?: string | null;
   sessionUpdate:
     | "agent_message_chunk"
     | "agent_message"
@@ -155,7 +156,7 @@ export interface SessionUpdate {
   content?: {
     type: "text" | "json" | "image" | "audio";
     text?: string;
-    json?: any;
+    json?: unknown;
     commands?: any[];
     option?: any;
   };
