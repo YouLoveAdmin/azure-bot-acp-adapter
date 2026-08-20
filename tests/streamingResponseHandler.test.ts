@@ -143,3 +143,34 @@ test("StreamingResponseHandler does not duplicate an identical completion snapsh
 
   assert.equal(handler.getText(), "Final answer");
 });
+
+test("StreamingResponseHandler strips text before the final HTML response", () => {
+  const handler = new StreamingResponseHandler();
+
+  handler.handleUpdate({
+    sessionUpdate: "agent_message_completion",
+    content: {
+      type: "text",
+      text: "I'll check the documents first.<p><strong>Plan information:</strong></p>"
+    }
+  });
+
+  assert.equal(
+    handler.getResponse().text,
+    "<p><strong>Plan information:</strong></p>"
+  );
+});
+
+test("StreamingResponseHandler preserves responses without HTML", () => {
+  const handler = new StreamingResponseHandler();
+
+  handler.handleUpdate({
+    sessionUpdate: "agent_message_completion",
+    content: {
+      type: "text",
+      text: "Plain-text fallback"
+    }
+  });
+
+  assert.equal(handler.getResponse().text, "Plain-text fallback");
+});
