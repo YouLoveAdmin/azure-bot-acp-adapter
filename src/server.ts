@@ -19,7 +19,14 @@ applySymlinkMappings(config.symlinkMappings);
 
 const app = express();
 app.use(express.json());
-app.use(payloadLogger);
+app.use((req, res, next) => {
+  if (req.path === config.healthEndpointPath) {
+    next();
+    return;
+  }
+
+  payloadLogger(req, res, next);
+});
 const sessionStore = new SessionStore();
 
 // Initialize WebSocket components
