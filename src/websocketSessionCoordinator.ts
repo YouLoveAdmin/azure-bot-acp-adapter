@@ -635,6 +635,7 @@ export class WebSocketSessionCoordinator {
 
     // Session already initialized and ready
     if (session?.sessionId && session.sessionState === "ready") {
+      this.sessionToConversationMap.set(session.sessionId, conversationKey);
       this.sessionStore.touch(conversationKey);
       return session.sessionId;
     }

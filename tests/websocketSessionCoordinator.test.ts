@@ -81,6 +81,23 @@ test("sendMessage does not attempt session/load for an unrelated prompt failure"
   assert.deepEqual(calls, ["prompt"]);
 });
 
+test("ensureSession restores routing for a ready session after coordinator recreation", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-restored-routing";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "existing-session";
+  record.sessionState = "ready";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const sessionId = await coordinator.ensureSession(conversationKey);
+
+  assert.equal(sessionId, "existing-session");
+  assert.equal(
+    (coordinator as any).sessionToConversationMap.get("existing-session"),
+    conversationKey
+  );
+});
+
 test("resumeSessionWithFallback uses session/load when session/resume is unsupported", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
   const calls: string[] = [];
