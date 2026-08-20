@@ -641,7 +641,7 @@ async function ensureWebSocketReady(): Promise<void> {
 
   wsConnectingPromise = (async () => {
     try {
-      if (wsInitialized && wsManager && wsCoordinator) {
+      if (wsManager && wsCoordinator) {
         // Manager + coordinator already exist (background reconnect loop is active).
         // Short-circuit: connect immediately and re-run the handshake.
         console.log("WebSocket not ready — reconnecting on demand...");
