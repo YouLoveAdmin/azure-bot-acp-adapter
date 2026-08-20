@@ -1,5 +1,10 @@
 import { SessionUpdate } from "./types/websocket";
 
+export function stripTextBeforeHtml(responseText: string): string {
+  const openingTagIndex = responseText.search(/<[a-z][^>]*>/i);
+  return openingTagIndex >= 0 ? responseText.slice(openingTagIndex) : responseText;
+}
+
 /**
  * Streaming Response Handler
  *
@@ -201,7 +206,7 @@ export class StreamingResponseHandler {
     errors: any[];
   } {
     return {
-      text: this.getText(),
+      text: stripTextBeforeHtml(this.getText()),
       toolCalls: this.toolCalls,
       stateChanges: this.sessionStateChanges,
       errors: this.errors
