@@ -95,6 +95,9 @@ test("generateBotMessageReport pairs messages and writes HTML", async () => {
   assert.ok(html.includes("<p>Reply with HTML</p>"));
   assert.ok(html.includes("2.500 s"));
   assert.ok(html.includes("Unmatched"));
+  assert.ok(html.includes('<colgroup><col class="message-column"><col class="metadata-column" span="4"></colgroup>'));
+  assert.ok(html.includes(".message-column { width: 70%; }"));
+  assert.ok(html.includes(".metadata-column { width: 7.5%; }"));
 });
 
 test("getEffectiveReportDays adds one extra day for positive windows", () => {
