@@ -3,6 +3,12 @@ export type SuggestedQuestion = {
   value: string;
 };
 
+export type SuggestedQuestionParseResult = {
+  matchedHeading: boolean;
+  questions: SuggestedQuestion[];
+  ignoredItems: number;
+};
+
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&nbsp;/gi, " ")
@@ -24,20 +30,29 @@ function htmlToText(value: string): string {
 }
 
 /** Extract numbered suggested questions from the response's HTML section. */
-export function parseSuggestedQuestions(html: string): SuggestedQuestion[] {
-  const headingMatch = html.match(/<h[1-6][^>]*>\s*Suggested Questions\b[^<]*<\/h[1-6]>/i);
+export function parseSuggestedQuestionsWithDiagnostics(html: string): SuggestedQuestionParseResult {
+  const headingMatch = [...html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)]
+    .find((match) => /^Suggested Questions\b/i.test(htmlToText(match[1])));
   if (!headingMatch || headingMatch.index === undefined) {
-    return [];
+    return { matchedHeading: false, questions: [], ignoredItems: 0 };
   }
 
   const afterHeading = html.slice(headingMatch.index + headingMatch[0].length);
   const section = afterHeading.split(/<h[1-6][^>]*>/i, 1)[0];
   const questions: SuggestedQuestion[] = [];
+  const numberedItems = new Set<string>();
+  let ignoredItems = 0;
 
-  for (const paragraph of section.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)) {
-    const text = htmlToText(paragraph[1]);
+  for (const item of section.matchAll(/<(?:p|li)\b[^>]*>([\s\S]*?)<\/(?:p|li)>/gi)) {
+    const text = htmlToText(item[1]);
     const questionMatch = text.match(/^\d+[.)]\s*(.+)$/);
-    if (!questionMatch || questionMatch[1].trim().length === 0) {
+    if (!questionMatch) {
+      continue;
+    }
+
+    numberedItems.add(text);
+    if (questionMatch[1].trim().length === 0) {
+      ignoredItems++;
       continue;
     }
 
@@ -45,5 +60,25 @@ export function parseSuggestedQuestions(html: string): SuggestedQuestion[] {
     questions.push({ title: question, value: question });
   }
 
-  return questions;
+  for (const line of htmlToText(section).split(/\r?\n|(?=\d+[.)]\s)/)) {
+    const text = line.trim();
+    const questionMatch = text.match(/^\d+[.)]\s*(.+)$/);
+    if (!questionMatch || numberedItems.has(text)) {
+      continue;
+    }
+
+    if (questionMatch[1].trim().length === 0) {
+      ignoredItems++;
+      continue;
+    }
+
+    const question = questionMatch[1].trim();
+    questions.push({ title: question, value: question });
+  }
+
+  return { matchedHeading: true, questions, ignoredItems };
+}
+
+export function parseSuggestedQuestions(html: string): SuggestedQuestion[] {
+  return parseSuggestedQuestionsWithDiagnostics(html).questions;
 }

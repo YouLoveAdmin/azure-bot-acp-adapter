@@ -16,7 +16,7 @@ import { WebSocketSessionCoordinator } from "./websocketSessionCoordinator";
 import { applySymlinkMappings } from "./symlinkBootstrap";
 import { applyReportCronBootstrap } from "./reportCronBootstrap";
 import { applyEmailReportCronBootstrap } from "./emailReportCronBootstrap";
-import { parseSuggestedQuestions, SuggestedQuestion } from "./suggestedQuestionParser";
+import { parseSuggestedQuestionsWithDiagnostics, SuggestedQuestion } from "./suggestedQuestionParser";
 
 applySymlinkMappings(config.symlinkMappings);
 applyReportCronBootstrap();
@@ -337,6 +337,14 @@ async function sendActivityWithLog(
   const conversationId = context.activity.conversation?.id ?? "unknown-conversation";
   const userId = context.activity.from?.id ?? "unknown-user";
 
+  console.info("[suggested-question-card] preparing outgoing activity", {
+    source,
+    channelId,
+    questionCount: suggestedQuestions.length,
+    questions: suggestedQuestions.map((question) => question.title),
+    willAttachHeroCard: suggestedQuestions.length > 0
+  });
+
   if (config.outgoingActivityLogEnabled) {
     console.info("[outgoing] sendActivity attempt", {
       source,
@@ -365,9 +373,8 @@ async function sendActivityWithLog(
       ...(suggestedQuestions.length > 0 ? {
         attachments: [CardFactory.heroCard(
           "Suggested Questions",
-          undefined,
-          undefined,
-          undefined,
+          "",
+          [],
           suggestedQuestions.map((question) => ({
             type: "imBack" as const,
             title: question.title,
@@ -388,7 +395,9 @@ async function sendActivityWithLog(
         conversationId,
         userId,
         textLength: text.length,
-        stopReason: stopReason ?? "n/a"
+        stopReason: stopReason ?? "n/a",
+        suggestedQuestionCount: suggestedQuestions.length,
+        heroCardAttached: suggestedQuestions.length > 0
       });
 
       logOutgoingActivity({
@@ -438,6 +447,14 @@ async function sendJwtOnlyActivityWithLog(
   const conversationId = activity.conversation?.id ?? "unknown-conversation";
   const userId = activity.from?.id ?? "unknown-user";
 
+  console.info("[suggested-question-card] preparing JWT-only outgoing activity", {
+    source,
+    channelId,
+    questionCount: suggestedQuestions.length,
+    questions: suggestedQuestions.map((question) => question.title),
+    willAttachHeroCard: suggestedQuestions.length > 0
+  });
+
   if (config.outgoingActivityLogEnabled) {
     console.info("[outgoing] sendActivity attempt", {
       source,
@@ -477,9 +494,8 @@ async function sendJwtOnlyActivityWithLog(
         ...(suggestedQuestions.length > 0 ? {
           attachments: [CardFactory.heroCard(
             "Suggested Questions",
-            undefined,
-            undefined,
-            undefined,
+            "",
+            [],
             suggestedQuestions.map((question) => ({
               type: "imBack" as const,
               title: question.title,
@@ -582,15 +598,26 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{
   }
 
   replyMessage = sanitizeBackendReplyText(replyMessage);
+  const parsedSuggestions = parseSuggestedQuestionsWithDiagnostics(replyMessage);
+  console.info("[suggested-question-parser] response inspected", {
+    conversationKey,
+    matchedHeading: parsedSuggestions.matchedHeading,
+    parsedQuestionCount: parsedSuggestions.questions.length,
+    ignoredItemCount: parsedSuggestions.ignoredItems
+  });
 
   return {
     text: replyMessage,
     stopReason: response.stopReason,
-    suggestedQuestions: parseSuggestedQuestions(replyMessage)
+    suggestedQuestions: parsedSuggestions.questions
   };
 }
 
-async function buildConversationReply(input: MessageRoutingInput): Promise<{ text: string; stopReason: string }> {
+async function buildConversationReply(input: MessageRoutingInput): Promise<{
+  text: string;
+  stopReason: string;
+  suggestedQuestions: SuggestedQuestion[];
+}> {
   return routeMessageToBackend(input);
 }
 
