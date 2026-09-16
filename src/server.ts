@@ -16,6 +16,7 @@ import { WebSocketSessionCoordinator } from "./websocketSessionCoordinator";
 import { applySymlinkMappings } from "./symlinkBootstrap";
 import { applyReportCronBootstrap } from "./reportCronBootstrap";
 import { applyEmailReportCronBootstrap } from "./emailReportCronBootstrap";
+import { parseSuggestedQuestions, SuggestedQuestion } from "./suggestedQuestionParser";
 
 applySymlinkMappings(config.symlinkMappings);
 applyReportCronBootstrap();
@@ -329,7 +330,8 @@ async function sendActivityWithLog(
   text: string,
   source: "api/messages" | "api/dev/messages",
   stopReason?: string,
-  responseType: ResponseType = "final"
+  responseType: ResponseType = "final",
+  suggestedQuestions: SuggestedQuestion[] = []
 ): Promise<void> {
   const channelId = context.activity.channelId ?? "unknown-channel";
   const conversationId = context.activity.conversation?.id ?? "unknown-conversation";
@@ -360,6 +362,19 @@ async function sendActivityWithLog(
     await context.sendActivity({
       type: ActivityTypes.Message,
       text,
+      ...(suggestedQuestions.length > 0 ? {
+        attachments: [CardFactory.heroCard(
+          "Suggested Questions",
+          undefined,
+          undefined,
+          undefined,
+          suggestedQuestions.map((question) => ({
+            type: "imBack" as const,
+            title: question.title,
+            value: question.value
+          }))
+        )]
+      } : {}),
       channelData: {
         responseType,
         isFinal: responseType === "final",
@@ -416,7 +431,8 @@ async function sendJwtOnlyActivityWithLog(
   activity: Activity,
   text: string,
   source: "api/messages" | "api/dev/messages",
-  stopReason?: string
+  stopReason?: string,
+  suggestedQuestions: SuggestedQuestion[] = []
 ): Promise<void> {
   const channelId = activity.channelId ?? "unknown-channel";
   const conversationId = activity.conversation?.id ?? "unknown-conversation";
@@ -455,7 +471,23 @@ async function sendJwtOnlyActivityWithLog(
   try {
     const reference = TurnContext.getConversationReference(activity);
     await adapter.continueConversationAsync(botAppId, reference, async (proactiveContext) => {
-      await proactiveContext.sendActivity(text);
+      await proactiveContext.sendActivity({
+        type: ActivityTypes.Message,
+        text,
+        ...(suggestedQuestions.length > 0 ? {
+          attachments: [CardFactory.heroCard(
+            "Suggested Questions",
+            undefined,
+            undefined,
+            undefined,
+            suggestedQuestions.map((question) => ({
+              type: "imBack" as const,
+              title: question.title,
+              value: question.value
+            }))
+          )]
+        } : {})
+      });
     });
 
     if (config.outgoingActivityLogEnabled) {
@@ -504,13 +536,18 @@ async function sendJwtOnlyActivityWithLog(
   }
 }
 
-async function routeMessageToBackend(input: MessageRoutingInput): Promise<{ text: string; stopReason: string }> {
+async function routeMessageToBackend(input: MessageRoutingInput): Promise<{
+  text: string;
+  stopReason: string;
+  suggestedQuestions: SuggestedQuestion[];
+}> {
   const conversationKey = `${input.channelId}|${input.conversationId}|${input.userId}`;
 
   if (!input.userText) {
     return {
       text: "Please send a message.",
-      stopReason: "validation"
+      stopReason: "validation",
+      suggestedQuestions: []
     };
   }
 
@@ -548,7 +585,8 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{ text
 
   return {
     text: replyMessage,
-    stopReason: response.stopReason
+    stopReason: response.stopReason,
+    suggestedQuestions: parseSuggestedQuestions(replyMessage)
   };
 }
 
@@ -775,7 +813,13 @@ app.post("/api/messages", async (req, res) => {
 
     try {
       const reply = await routeMessageToBackend({ channelId, conversationId, userId, userText });
-      await sendJwtOnlyActivityWithLog(activity, reply.text, "api/messages", reply.stopReason);
+      await sendJwtOnlyActivityWithLog(
+        activity,
+        reply.text,
+        "api/messages",
+        reply.stopReason,
+        reply.suggestedQuestions
+      );
       // Acknowledge the incoming activity; the user-visible reply is sent as a channel activity.
       res.status(200).json({});
     } catch (error) {
@@ -858,7 +902,9 @@ app.post("/api/messages", async (req, res) => {
                 proactiveContext,
                 reply.text,
                 "api/messages",
-                reply.stopReason
+                reply.stopReason,
+                "final",
+                reply.suggestedQuestions
               );
             });
             stopStreamUpdateForwarding(conversationKey);
@@ -909,7 +955,9 @@ app.post("/api/messages", async (req, res) => {
         context,
         reply.text,
         "api/messages",
-        reply.stopReason
+        reply.stopReason,
+        "final",
+        reply.suggestedQuestions
       );
     } catch (error) {
       const diagnostics = getBackendErrorDiagnostics(error);
@@ -1053,7 +1101,9 @@ if (process.env.NODE_ENV === "development") {
             context,
             reply.text,
             "api/dev/messages",
-            reply.stopReason
+            reply.stopReason,
+            "final",
+            reply.suggestedQuestions
           );
         } catch (error) {
           console.error("[DEV] Message endpoint error", {
