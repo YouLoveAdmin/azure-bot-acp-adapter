@@ -744,6 +744,49 @@ export class WebSocketSessionCoordinator {
   }
 
   /**
+   * Abandon the current conversation session and replace it with a newly
+   * created/configured/warmed session for a layout-contract retry.
+   */
+  async replaceWithFreshPreparedSession(conversationKey: string, expectedSessionId: string): Promise<string> {
+    if (!this.manager || !this.isInitialized) {
+      throw new Error("WebSocket not initialized");
+    }
+
+    const session = this.sessionStore.get(conversationKey);
+    if (!session || session.sessionId !== expectedSessionId) {
+      throw new Error("Conversation session changed before layout retry");
+    }
+
+    try {
+      await this.manager.sessionDestroy(expectedSessionId);
+    } catch (error) {
+      console.warn(`Failed to destroy nonconforming session ${expectedSessionId} before retry: ${error}`);
+    }
+
+    this.sessionToConversationMap.delete(expectedSessionId);
+    this.preparedSessionIds.delete(expectedSessionId);
+    this.preparedSessionInitialResponses.delete(expectedSessionId);
+    this.sessionStore.resetToNew(conversationKey);
+
+    const replacementSessionId = await this.createPreparedSessionInternal();
+    session.sessionId = replacementSessionId;
+    session.sessionMode = "prepared";
+    session.sessionState = "ready";
+    session.initializedAt = Date.now();
+    this.sessionToConversationMap.set(replacementSessionId, conversationKey);
+
+    logSessionLifecycleEvent({
+      event: "layout-retry-session-replaced",
+      sessionId: replacementSessionId,
+      sourceSessionId: expectedSessionId,
+      conversationKey,
+      sessionMode: "prepared"
+    });
+
+    return replacementSessionId;
+  }
+
+  /**
    * Cleanup: destroy session on backend
    */
   async destroySession(conversationKey: string): Promise<void> {

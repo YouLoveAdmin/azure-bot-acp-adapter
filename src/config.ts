@@ -35,6 +35,11 @@ type AppConfig = {
   outgoingActivityLogEnabled: boolean;
   streamingResponsesEnabled: boolean;
   verboseSessionUpdates: boolean;
+  responseLayoutGuardMode: "off" | "warn" | "fallback";
+  responseLayoutRequireHtml: boolean;
+  responseLayoutRequiredHeading: string;
+  responseLayoutMinSuggestedQuestions: number;
+  responseLayoutMaxAttempts: number;
   symlinkMappings: string;
 };
 
@@ -59,6 +64,22 @@ function asNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function asNonNegativeInteger(name: string, fallback: number): number {
+  const parsed = asNumber(name, fallback);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Environment variable ${name} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function asPositiveInteger(name: string, fallback: number): number {
+  const parsed = asNonNegativeInteger(name, fallback);
+  if (parsed < 1) {
+    throw new Error(`Environment variable ${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function asBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (!raw) {
@@ -67,6 +88,14 @@ function asBoolean(name: string, fallback: boolean): boolean {
 
   const normalized = raw.trim().toLowerCase();
   return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function asResponseLayoutGuardMode(): "off" | "warn" | "fallback" {
+  const raw = (process.env.ACP_RESPONSE_LAYOUT_GUARD_MODE ?? "off").trim().toLowerCase();
+  if (raw === "off" || raw === "warn" || raw === "fallback") {
+    return raw;
+  }
+  throw new Error("Environment variable ACP_RESPONSE_LAYOUT_GUARD_MODE must be off, warn, or fallback");
 }
 
 function asCsv(name: string): string[] {
@@ -104,6 +133,11 @@ const jwtAllowedIssuers = explicitAllowedIssuers.length > 0
   : defaultIssuers(jwtTenantId, jwtTokenVersion);
 
 const jwtOnlyAuthEnabled = asBoolean("JWT_ONLY_AUTH_ENABLED", false);
+const responseLayoutRequiredHeading = (process.env.ACP_RESPONSE_LAYOUT_REQUIRED_HEADING ?? "Suggested Questions").trim();
+const responseLayoutMinSuggestedQuestions = asNonNegativeInteger("ACP_RESPONSE_LAYOUT_MIN_SUGGESTED_QUESTIONS", 1);
+if (responseLayoutRequiredHeading.length === 0 && responseLayoutMinSuggestedQuestions > 0) {
+  throw new Error("ACP_RESPONSE_LAYOUT_MIN_SUGGESTED_QUESTIONS must be 0 when ACP_RESPONSE_LAYOUT_REQUIRED_HEADING is empty");
+}
 if (jwtOnlyAuthEnabled) {
   if (!openIdConfigurationUrl && !jwtTenantId) {
     throw new Error("JWT-only auth is enabled but neither OPENID_CONFIGURATION_URL nor JWT_TENANT_ID is configured");
@@ -153,5 +187,10 @@ export const config: AppConfig = {
   outgoingActivityLogEnabled: asBoolean("OUTGOING_ACTIVITY_LOG_ENABLED", true),
   streamingResponsesEnabled: asBoolean("STREAMING_RESPONSES_ENABLED", false),
   verboseSessionUpdates: asBoolean("VERBOSE_SESSION_UPDATES", false),
+  responseLayoutGuardMode: asResponseLayoutGuardMode(),
+  responseLayoutRequireHtml: asBoolean("ACP_RESPONSE_LAYOUT_REQUIRE_HTML", true),
+  responseLayoutRequiredHeading,
+  responseLayoutMinSuggestedQuestions,
+  responseLayoutMaxAttempts: asPositiveInteger("ACP_RESPONSE_LAYOUT_MAX_ATTEMPTS", 2),
   symlinkMappings: process.env.ACP_SYMLINK_MAPPINGS ?? ""
 };

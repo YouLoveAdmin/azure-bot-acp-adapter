@@ -29,10 +29,21 @@ function htmlToText(value: string): string {
     .trim();
 }
 
-/** Extract numbered suggested questions from the response's HTML section. */
-export function parseSuggestedQuestionsWithDiagnostics(html: string): SuggestedQuestionParseResult {
+/** Extract numbered items following a configurable HTML heading. */
+export function parseSuggestedQuestionsWithDiagnostics(
+  html: string,
+  requiredHeading = "Suggested Questions"
+): SuggestedQuestionParseResult {
+  const normalizedRequiredHeading = requiredHeading.trim().toLocaleLowerCase();
   const headingMatch = [...html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)]
-    .find((match) => /^Suggested Questions\b/i.test(htmlToText(match[1])));
+    .find((match) => {
+      const headingText = htmlToText(match[1]);
+      const normalizedHeading = headingText.toLocaleLowerCase();
+      return normalizedRequiredHeading.length > 0
+        && normalizedHeading.startsWith(normalizedRequiredHeading)
+        && (normalizedHeading.length === normalizedRequiredHeading.length
+          || !/[a-z0-9]/i.test(headingText[normalizedRequiredHeading.length]));
+    });
   if (!headingMatch || headingMatch.index === undefined) {
     return { matchedHeading: false, questions: [], ignoredItems: 0 };
   }
