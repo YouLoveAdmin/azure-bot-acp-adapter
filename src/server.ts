@@ -17,6 +17,7 @@ import { applySymlinkMappings } from "./symlinkBootstrap";
 import { applyReportCronBootstrap } from "./reportCronBootstrap";
 import { applyEmailReportCronBootstrap } from "./emailReportCronBootstrap";
 import { parseSuggestedQuestionsWithDiagnostics, SuggestedQuestion } from "./suggestedQuestionParser";
+import { analyzeResponseLayout, RESPONSE_LAYOUT_FALLBACK } from "./responseLayoutGuard";
 
 applySymlinkMappings(config.symlinkMappings);
 applyReportCronBootstrap();
@@ -577,37 +578,111 @@ async function routeMessageToBackend(input: MessageRoutingInput): Promise<{
   }
 
   // Ensure session exists for this conversation
-  const sessionId = await wsCoordinator.ensureSession(conversationKey);
-  const selectedSession = wsCoordinator.getSessionDiagnostics(conversationKey);
-  console.info("[upstream-session] selected", {
-    channelId: input.channelId,
-    conversationKey,
-    sessionId,
-    sessionMode: selectedSession?.sessionMode ?? "unknown",
-    sessionState: selectedSession?.sessionState ?? "unknown",
-    sessionAgeMs: selectedSession?.initializedAt ? Date.now() - selectedSession.initializedAt : null,
-    promptLength: input.userText.length
+  let sessionId = await wsCoordinator.ensureSession(conversationKey);
+  let selectedSession = wsCoordinator.getSessionDiagnostics(conversationKey);
+  let response!: Awaited<ReturnType<WebSocketSessionCoordinator["sendMessage"]>>;
+  let replyMessage = "";
+  let layout = analyzeResponseLayout("", {
+    requireHtmlMarkup: config.responseLayoutRequireHtml,
+    requiredHeading: config.responseLayoutRequiredHeading,
+    minSuggestedQuestions: config.responseLayoutMinSuggestedQuestions
   });
+  const maxAttempts = config.responseLayoutGuardMode === "fallback"
+    ? config.responseLayoutMaxAttempts
+    : 1;
 
-  // Send message to backend and get buffered response
-  const response = await wsCoordinator.sendMessage(conversationKey, sessionId, input.userText);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.info("[upstream-session] selected", {
+      channelId: input.channelId,
+      conversationKey,
+      sessionId,
+      sessionMode: selectedSession?.sessionMode ?? "unknown",
+      sessionState: selectedSession?.sessionState ?? "unknown",
+      sessionAgeMs: selectedSession?.initializedAt ? Date.now() - selectedSession.initializedAt : null,
+      promptLength: input.userText.length,
+      layoutAttempt: attempt,
+      maxLayoutAttempts: maxAttempts
+    });
+
+    response = await wsCoordinator.sendMessage(conversationKey, sessionId, input.userText);
+    replyMessage = response.text;
+    if (!replyMessage) {
+      if (response.hasErrors) {
+        replyMessage = `Error: ${response.error?.message || "Unknown error"}`;
+      } else {
+        replyMessage = `Response received (${response.stopReason})`;
+      }
+    }
+
+    replyMessage = sanitizeBackendReplyText(replyMessage);
+    layout = analyzeResponseLayout(replyMessage, {
+      requireHtmlMarkup: config.responseLayoutRequireHtml,
+      requiredHeading: config.responseLayoutRequiredHeading,
+      minSuggestedQuestions: config.responseLayoutMinSuggestedQuestions
+    });
+
+    if (layout.conforms || config.responseLayoutGuardMode === "off") {
+      break;
+    }
+
+    if (config.responseLayoutGuardMode === "warn") {
+      console.warn("[response-layout-guard] suspected instruction/layout deviation", {
+        conversationKey,
+        sessionId,
+        sessionMode: selectedSession?.sessionMode ?? "unknown",
+        attempt,
+        missingSignals: layout.missingSignals,
+        hasHtmlMarkup: layout.hasHtmlMarkup,
+        hasSuggestedQuestionsHeading: layout.hasSuggestedQuestionsHeading,
+        suggestedQuestionCount: layout.suggestedQuestionCount
+      });
+      break;
+    }
+
+    console.warn("[response-layout-guard] suspected instruction/layout deviation", {
+      conversationKey,
+      sessionId,
+      sessionMode: selectedSession?.sessionMode ?? "unknown",
+      attempt,
+      maxAttempts,
+      missingSignals: layout.missingSignals,
+      hasHtmlMarkup: layout.hasHtmlMarkup,
+      hasSuggestedQuestionsHeading: layout.hasSuggestedQuestionsHeading,
+      suggestedQuestionCount: layout.suggestedQuestionCount
+    });
+
+    if (attempt === maxAttempts) {
+      replyMessage = RESPONSE_LAYOUT_FALLBACK;
+      break;
+    }
+
+    try {
+      const abandonedSessionId = sessionId;
+      sessionId = await wsCoordinator.replaceWithFreshPreparedSession(conversationKey, abandonedSessionId);
+      selectedSession = wsCoordinator.getSessionDiagnostics(conversationKey);
+      console.info("[response-layout-guard] retrying user prompt in a newly warmed session", {
+        conversationKey,
+        abandonedSessionId,
+        replacementSessionId: sessionId,
+        nextAttempt: attempt + 1,
+        maxAttempts
+      });
+    } catch (error) {
+      console.error("[response-layout-guard] failed to create replacement session", {
+        conversationKey,
+        abandonedSessionId: sessionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      replyMessage = RESPONSE_LAYOUT_FALLBACK;
+      break;
+    }
+  }
 
   // Pool replenishment (if this turn claimed a prepared session) is
   // deferred until after the user-visible reply has actually been sent -
   // see consumeClaimedFromPool()/triggerPreparedSessionReplenishmentAfterSuccess()
   // at each outgoing-activity call site below.
 
-  // Format user-friendly response message
-  let replyMessage = response.text;
-  if (!replyMessage) {
-    if (response.hasErrors) {
-      replyMessage = `Error: ${response.error?.message || "Unknown error"}`;
-    } else {
-      replyMessage = `Response received (${response.stopReason})`;
-    }
-  }
-
-  replyMessage = sanitizeBackendReplyText(replyMessage);
   const parsedSuggestions = parseSuggestedQuestionsWithDiagnostics(replyMessage);
   console.info("[suggested-question-parser] response inspected", {
     conversationKey,

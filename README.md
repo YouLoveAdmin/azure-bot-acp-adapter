@@ -204,6 +204,13 @@ The response reports service health, in-memory session count, and remote WebSock
 | `OUTGOING_ACTIVITY_LOG_ENABLED` | No | `true` | Successful outgoing activity logging |
 | `STREAMING_RESPONSES_ENABLED` | No | `false` | Process streamed updates while preserving channel-compatible delivery |
 | `VERBOSE_SESSION_UPDATES` | No | `false` | Diagnostic-only forwarding of intermediate message/tool previews to Teams |
+| `ACP_RESPONSE_LAYOUT_GUARD_MODE` | No | `off` | `off` passes upstream replies through unchanged; `warn` logs layout deviations but passes replies through; `fallback` retries nonconforming replies in fresh sessions and substitutes a safe message if attempts are exhausted |
+| `ACP_RESPONSE_LAYOUT_REQUIRE_HTML` | No | `true` | Require at least one HTML tag in the upstream response |
+| `ACP_RESPONSE_LAYOUT_REQUIRED_HEADING` | No | `Suggested Questions` | Required heading before numbered follow-up items; empty disables heading validation |
+| `ACP_RESPONSE_LAYOUT_MIN_SUGGESTED_QUESTIONS` | No | `1` | Minimum numbered items after the configured heading; set to `0` with an empty heading to disable the section check |
+| `ACP_RESPONSE_LAYOUT_MAX_ATTEMPTS` | No | `2` | Total upstream replies checked in fallback mode, including the initial reply; each retry abandons the current session, creates/configures/warms a fresh prepared session, and resends the same user question |
+
+The response layout guard detects likely instruction/layout deviations; it does not prove the system prompt was ignored or validate factual accuracy. When `ACP_RESPONSE_LAYOUT_GUARD_MODE` is missing or set to `off`, replies pass through as before. In `fallback` mode, a nonconforming reply causes a fresh-session retry up to `ACP_RESPONSE_LAYOUT_MAX_ATTEMPTS`; if the final reply still fails the configured format, it is replaced with an adapter-generated verification warning. Configure the `ACP_RESPONSE_LAYOUT_*` contract values to match the response format required by your agent.
 
 ### Authentication
 

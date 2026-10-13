@@ -234,6 +234,58 @@ test("ensureSession does not use the prepared-session pool for an existing conve
   assert.deepEqual(calls, ["new"]);
 });
 
+test("replaceWithFreshPreparedSession destroys the old session and binds a warmed replacement", async () => {
+  const store = new SessionStore();
+  const conversationKey = "conv-layout-retry";
+  const record = store.getOrCreate(conversationKey);
+  record.sessionId = "nonconforming-session";
+  record.sessionState = "ready";
+  record.sessionMode = "prepared";
+
+  const coordinator = new WebSocketSessionCoordinator(store);
+  const calls: string[] = [];
+  const originalWarmupPrompt = config.warmupSessionInitialPrompt;
+  (config as any).warmupSessionInitialPrompt = "warmup before retry";
+
+  const manager = {
+    sessionDestroy: async (sessionId: string) => { calls.push(`destroy:${sessionId}`); },
+    sessionNew: async () => {
+      calls.push("new");
+      return { sessionId: "replacement-session" };
+    },
+    setConfigOption: async (sessionId: string, configId: string, value: string) => {
+      calls.push(`config:${sessionId}:${configId}:${value}`);
+      return {};
+    },
+    sessionPrompt: async (sessionId: string, text: string) => {
+      calls.push(`prompt:${sessionId}:${text}`);
+      return { stopReason: "completion" as const };
+    }
+  };
+
+  (coordinator as any).manager = manager;
+  (coordinator as any).isInitialized = true;
+
+  try {
+    const replacementId = await coordinator.replaceWithFreshPreparedSession(conversationKey, "nonconforming-session");
+
+    assert.equal(replacementId, "replacement-session");
+    assert.deepEqual(calls, [
+      "destroy:nonconforming-session",
+      "new",
+      "config:replacement-session:agent:ACP-Chatbot",
+      "prompt:replacement-session:warmup before retry"
+    ]);
+    assert.equal(record.sessionId, "replacement-session");
+    assert.equal(record.sessionMode, "prepared");
+    assert.equal(record.sessionState, "ready");
+    assert.equal((coordinator as any).sessionToConversationMap.has("nonconforming-session"), false);
+    assert.equal((coordinator as any).sessionToConversationMap.get("replacement-session"), conversationKey);
+  } finally {
+    (config as any).warmupSessionInitialPrompt = originalWarmupPrompt;
+  }
+});
+
 test("createPreparedSessionInternal still returns a session when default config is unsupported", async () => {
   const coordinator = new WebSocketSessionCoordinator(new SessionStore());
   const manager = {
